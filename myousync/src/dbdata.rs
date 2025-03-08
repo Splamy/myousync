@@ -239,7 +239,7 @@ impl DbState {
         result: Option<&BrainzMetadata>,
     ) -> bool {
         let result = result.map(|r| serde_json::to_string(r).unwrap());
-        self.set_track_field(video_id, "result_override", result.as_deref())
+        self.set_track_field(video_id, "override_result", result.as_deref())
     }
 
     fn set_track_field(&self, video_id: &str, field: &str, value: Option<&str>) -> bool {
