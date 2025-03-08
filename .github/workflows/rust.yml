@@ -50,3 +50,8 @@ jobs:
       with:
         name: build
         path: myousync.tar
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: myousync.tar
