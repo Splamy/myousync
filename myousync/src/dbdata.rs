@@ -224,33 +224,23 @@ impl DbState {
         )
     }
 
-    pub fn set_track_query_override(
+    pub fn modify_video_status<F: Fn(&mut VideoStatus) -> bool>(
         &self,
         video_id: &str,
-        query: Option<&BrainzMultiSearch>,
-    ) -> bool {
-        let query = query.map(|q| serde_json::to_string(q).unwrap());
-        self.set_track_field(video_id, "override_query", query.as_deref())
-    }
-
-    pub fn set_track_result_override(
-        &self,
-        video_id: &str,
-        result: Option<&BrainzMetadata>,
-    ) -> bool {
-        let result = result.map(|r| serde_json::to_string(r).unwrap());
-        self.set_track_field(video_id, "override_result", result.as_deref())
-    }
-
-    fn set_track_field(&self, video_id: &str, field: &str, value: Option<&str>) -> bool {
+        modify: F,
+    ) -> Option<VideoStatus> {
         let conn = self.conn.lock().unwrap();
-        conn
-            .execute(
-                &format!("UPDATE status SET {} = ?2, fetch_status = 1 WHERE video_id = ?1 AND fetch_status NOT IN (0,2)", field),
-                (&video_id, &value),
-            )
-            .unwrap()
-            > 0
+        if let Some(mut video) = Self::get_video_internal(&conn, video_id) {
+            let save = modify(&mut video);
+            if !save {
+                return None;
+            }
+            video.update_now();
+            Self::set_full_track_status_internal(&conn, &video);
+            Some(video)
+        } else {
+            None
+        }
     }
 
     pub fn get_all_videos(&self) -> Vec<VideoStatus> {
@@ -279,6 +269,10 @@ impl DbState {
 
     pub fn get_video(&self, video_id: &str) -> Option<VideoStatus> {
         let conn = self.conn.lock().unwrap();
+        Self::get_video_internal(&conn, video_id)
+    }
+
+    fn get_video_internal(conn: &Connection, video_id: &str) -> Option<VideoStatus> {
         conn.query_row_and_then("SELECT video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result FROM status WHERE video_id = ?1",
             &[video_id],
             Self::map_video_status)
@@ -308,6 +302,10 @@ impl DbState {
 
     pub fn set_full_track_status(&self, status: &VideoStatus) {
         let conn = self.conn.lock().unwrap();
+        Self::set_full_track_status_internal(&conn, status)
+    }
+
+    fn set_full_track_status_internal(conn: &Connection, status: &VideoStatus) {
         conn
             .execute(
                 "INSERT INTO status (video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result)
@@ -461,6 +459,10 @@ pub struct VideoStatus {
 impl VideoStatus {
     pub fn update_now(&mut self) {
         self.last_update = Utc::now().timestamp() as u64;
+    }
+
+    pub fn is_downloaded(&self) -> bool {
+        self.fetch_status != FetchStatus::NotFetched && self.fetch_status != FetchStatus::FetchError
     }
 }
 

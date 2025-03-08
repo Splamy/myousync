@@ -68,18 +68,49 @@ async fn run_server() {
                 .layer(middleware::from_fn(auth::auth)),
         )
         .route(
+            "/trigger_sync",
+            axum::routing::post({
+                async move || {
+                    MSState::trigger_sync();
+                }
+            })
+            .layer(cors_layer.clone())
+            .layer(middleware::from_fn(auth::auth)),
+        )
+        .route(
+            "/video/{video}/retry_fetch",
+            axum::routing::post({
+                async move |Path(video_id): Path<String>| {
+                    MSState::push_override(&video_id, |v| {
+                        if v.fetch_status != FetchStatus::FetchError {
+                            return false;
+                        }
+                        v.fetch_status = FetchStatus::NotFetched;
+                        true
+                    });
+                }
+            })
+            .layer(cors_layer.clone())
+            .layer(middleware::from_fn(auth::auth)),
+        )
+        .route(
             "/video/{video}/query",
             axum::routing::post({
                 async move |Path(video_id): Path<String>,
                             Json(query): Json<Option<BrainzMultiSearch>>| {
-                    let cleaned_query = query.map(|q| BrainzMultiSearch {
-                        trackid: norm_string(q.trackid.as_deref()),
-                        title: q.title.trim().to_owned(),
-                        artist: norm_string(q.artist.as_deref()),
-                        album: norm_string(q.album.as_deref()),
+                    MSState::push_override(&video_id, |v| {
+                        if !v.is_downloaded() {
+                            return false;
+                        }
+                        let cleaned_query = query.as_ref().map(|q| BrainzMultiSearch {
+                            trackid: norm_string(q.trackid.as_deref()),
+                            title: q.title.trim().to_owned(),
+                            artist: norm_string(q.artist.as_deref()),
+                            album: norm_string(q.album.as_deref()),
+                        });
+                        v.override_query = cleaned_query;
+                        true
                     });
-                    dbdata::DB.set_track_query_override(&video_id, cleaned_query.as_ref());
-                    _ = TRIGGER_MUSIC_TAG.send(());
                 }
             })
             .layer(cors_layer.clone())
@@ -90,14 +121,19 @@ async fn run_server() {
             axum::routing::post({
                 async move |Path(video_id): Path<String>,
                             Json(result): Json<Option<BrainzMetadata>>| {
-                    let result = result.map(|r| BrainzMetadata {
-                        title: r.title.trim().to_owned(),
-                        artist: r.artist.into_iter().map(|s| s.trim().to_owned()).collect(),
-                        album: norm_string(r.album.as_deref()),
-                        brainz_recording_id: norm_string(r.brainz_recording_id.as_deref()),
+                    MSState::push_override(&video_id, |v| {
+                        if !v.is_downloaded() {
+                            return false;
+                        }
+                        let cleaned_result = result.as_ref().map(|r| BrainzMetadata {
+                            title: r.title.trim().to_owned(),
+                            artist: r.artist.iter().map(|s| s.trim().to_owned()).collect(),
+                            album: norm_string(r.album.as_deref()),
+                            brainz_recording_id: norm_string(r.brainz_recording_id.as_deref()),
+                        });
+                        v.override_result = cleaned_result;
+                        true
                     });
-                    dbdata::DB.set_track_result_override(&video_id, result.as_ref());
-                    _ = TRIGGER_MUSIC_TAG.send(());
                 }
             })
             .layer(cors_layer.clone())
@@ -107,7 +143,14 @@ async fn run_server() {
         .fallback_service(ServeDir::new("web"));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
-    info!("Listening on: http://{}", listener.local_addr().unwrap());
+    info!(
+        "Listening on: http://{}",
+        listener
+            .local_addr()
+            .unwrap()
+            .to_string()
+            .replace("0.0.0.0", "localhost")
+    );
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -237,13 +280,13 @@ async fn sync_all(s: &MSState) {
                         continue;
                     }
 
-                    s.push_update(&mut VideoStatus {
+                    MSState::push_update(&mut VideoStatus {
                         video_id: item.video_id.to_owned(),
                         fetch_status: FetchStatus::NotFetched,
                         ..Default::default()
                     });
 
-                    s.trigger_tagger();
+                    MSState::trigger_tagger();
                 }
             }
             Err(e) => {
@@ -268,10 +311,10 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
         FetchStatus::NotFetched => {
             if let Ok(dlp_file) = ytdlp::get(&s, video_id).await {
                 status.fetch_time = Utc::now().timestamp() as u64;
-                s.push_update_state(&mut status, FetchStatus::Fetched);
+                MSState::push_update_state(&mut status, FetchStatus::Fetched);
                 dlp_file
             } else {
-                s.push_update_state(&mut status, FetchStatus::FetchError);
+                MSState::push_update_state(&mut status, FetchStatus::FetchError);
                 return Err(anyhow!("Fetch error"));
             }
         }
@@ -283,7 +326,7 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
             if let Some(dlp_file) = ytdlp::try_get_metadata(video_id) {
                 dlp_file
             } else {
-                s.push_update_state(&mut status, FetchStatus::FetchError);
+                MSState::push_update_state(&mut status, FetchStatus::FetchError);
                 return Err(anyhow!("No metadata found"));
             }
         }
@@ -309,17 +352,17 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
         match brainz::analyze_brainz(&brainz_query).await {
             Ok(res) => {
                 status.last_result = Some(res.clone());
-                s.push_update(&mut status);
+                MSState::push_update(&mut status);
                 res
             }
             Err(err) => {
                 status.last_result = None;
-                s.push_update_state(&mut status, FetchStatus::BrainzError);
+                MSState::push_update_state(&mut status, FetchStatus::BrainzError);
                 return Err(err.into());
             }
         }
     };
-    s.push_update(&mut status);
+    MSState::push_update(&mut status);
 
     let file = ytdlp::find_local_file(&s, video_id)
         .or_else(|| musicfiles::find_local_file(&s, video_id))
@@ -335,7 +378,7 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
 
     musicfiles::move_file_to_library(s, &file, &tags)?;
 
-    s.push_update_state(&mut status, FetchStatus::Categorized);
+    MSState::push_update_state(&mut status, FetchStatus::Categorized);
 
     Ok(())
 }
@@ -375,18 +418,33 @@ impl MSState {
         }
     }
 
-    pub fn push_update_state(&self, state: &mut VideoStatus, new_status: FetchStatus) {
-        state.fetch_status = new_status;
-        self.push_update(state);
+    pub fn push_override<F: Fn(&mut VideoStatus) -> bool>(video_id: &str, modify: F) {
+        if let Some(v) = dbdata::DB.modify_video_status(video_id, modify) {
+            Self::trigger_tagger();
+            Self::push_update_notification(&v);
+        }
     }
 
-    pub fn push_update(&self, status: &mut VideoStatus) {
+    pub fn push_update_state(state: &mut VideoStatus, new_status: FetchStatus) {
+        state.fetch_status = new_status;
+        Self::push_update(state);
+    }
+
+    pub fn push_update(status: &mut VideoStatus) {
         status.update_now();
         dbdata::DB.set_full_track_status(status);
+        Self::push_update_notification(status);
+    }
+
+    fn push_update_notification(status: &VideoStatus) {
         _ = NOTIFY_MUSIC_UPDATE.send(serde_json::to_string(&vec![status]).unwrap());
     }
 
-    pub fn trigger_tagger(&self) {
+    pub fn trigger_tagger() {
         _ = TRIGGER_MUSIC_TAG.send(());
+    }
+
+    pub fn trigger_sync() {
+        _ = TRIGGER_PLAYLIST_SYNC.send(());
     }
 }
