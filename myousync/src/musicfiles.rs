@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{brainz::BrainzMetadata, MSState};
+use crate::{brainz::BrainzMetadata, util, MSState};
 use anyhow::Context;
 use id3::TagLike;
 use log::info;
@@ -90,7 +90,14 @@ pub fn move_file_to_library(s: &MSState, path: &Path, tags: &MetadataTags) -> an
 
     new_path.push(format!("{}.{}", &clean_title, &orig_extenstion));
 
-    std::fs::rename(path, &new_path).map_err(|e| anyhow::anyhow!("Error moving file: {}", e))?;
+    if let Err(err_ren) = std::fs::rename(path, &new_path) {
+        if let Ok(_) = std::fs::copy(path, &new_path) {
+            std::fs::remove_file(path)
+                .map_err(|e| anyhow::anyhow!("Error delete after copy file: {}", e))?;
+        } else {
+            return Err(anyhow::anyhow!("Error moving file: {}", err_ren));
+        }
+    }
 
     // delete empty directories
     let mut parent = path.parent();
