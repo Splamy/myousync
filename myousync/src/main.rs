@@ -109,6 +109,7 @@ async fn run_server() {
                             album: norm_string(q.album.as_deref()),
                         });
                         v.override_query = cleaned_query;
+                        v.fetch_status = FetchStatus::Fetched;
                         true
                     });
                 }
@@ -132,6 +133,7 @@ async fn run_server() {
                             brainz_recording_id: norm_string(r.brainz_recording_id.as_deref()),
                         });
                         v.override_result = cleaned_result;
+                        v.fetch_status = FetchStatus::Fetched;
                         true
                     });
                 }
@@ -302,28 +304,29 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("Video not found"))?;
 
     if status.fetch_status == FetchStatus::Categorized {
-        info!("Video {} already categorized", video_id);
+        info!("Video {} already categorized", status.video_id);
         return Ok(());
     }
-    info!("checking vid {}", video_id);
+    info!("checking vid {}", status.video_id);
 
     let dlp_file: YtDlpResponse = match status.fetch_status {
-        FetchStatus::NotFetched => {
-            if let Ok(dlp_file) = ytdlp::get(&s, video_id).await {
+        FetchStatus::NotFetched => match ytdlp::get(&s, &status.video_id).await {
+            Ok(dlp_file) => {
                 status.fetch_time = Utc::now().timestamp() as u64;
                 MSState::push_update_state(&mut status, FetchStatus::Fetched);
                 dlp_file
-            } else {
-                MSState::push_update_state(&mut status, FetchStatus::FetchError);
-                return Err(anyhow!("Fetch error"));
             }
-        }
+            Err(err) => {
+                status.last_error = Some(err.to_string());
+                MSState::push_update_state(&mut status, FetchStatus::FetchError);
+                return Err(anyhow!("Fetch error: {}", err));
+            }
+        },
         FetchStatus::FetchError => {
-            error!("Error fetching video"); // TODO add retry logic
-            return Err(anyhow!("Fetch error"));
+            return Err(anyhow!("Video in fetch error state"));
         }
         _ => {
-            if let Some(dlp_file) = ytdlp::try_get_metadata(video_id) {
+            if let Some(dlp_file) = ytdlp::try_get_metadata(&status.video_id) {
                 dlp_file
             } else {
                 MSState::push_update_state(&mut status, FetchStatus::FetchError);
@@ -332,11 +335,13 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
         }
     };
 
-    let brainz_res = if let Some(override_result) = dbdata::DB.get_track_result_override(video_id) {
+    let brainz_res = if let Some(override_result) =
+        dbdata::DB.get_track_result_override(&status.video_id)
+    {
         serde_json::from_str::<BrainzMetadata>(&override_result).unwrap()
     } else {
         let brainz_query =
-            if let Some(override_query) = dbdata::DB.get_track_query_override(video_id) {
+            if let Some(override_query) = dbdata::DB.get_track_query_override(&status.video_id) {
                 serde_json::from_str::<BrainzMultiSearch>(&override_query).unwrap()
             } else {
                 let query = BrainzMultiSearch {
@@ -357,6 +362,7 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
             }
             Err(err) => {
                 status.last_result = None;
+                status.last_error = Some(err.to_string());
                 MSState::push_update_state(&mut status, FetchStatus::BrainzError);
                 return Err(err.into());
             }
@@ -364,12 +370,12 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
     };
     MSState::push_update(&mut status);
 
-    let file = ytdlp::find_local_file(&s, video_id)
-        .or_else(|| musicfiles::find_local_file(&s, video_id))
+    let file = ytdlp::find_local_file(&s, &status.video_id)
+        .or_else(|| musicfiles::find_local_file(&s, &status.video_id))
         .ok_or_else(|| anyhow!("No file found"))?;
 
     let tags = MetadataTags {
-        youtube_id: video_id.to_owned(),
+        youtube_id: status.video_id.clone(),
         brainz: brainz_res,
     };
 
@@ -390,12 +396,17 @@ pub struct MSConfig {
     pub temp: PathBuf,
     pub yt_client_id: String,
     pub yt_client_secret: String,
+    #[serde(default = "MSConfig::default_port")]
+    pub port: u16,
     /// Min wait between requests to youtube-dl
     #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(default = "MSConfig::default_yt_dlp_rate")]
     pub yt_dlp_rate: Duration,
     #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(default = "MSConfig::default_cleanup_tag_rate")]
     pub cleanup_tag_rate: Duration,
     #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(default = "MSConfig::default_playlist_sync_rate")]
     pub playlist_sync_rate: Duration,
 }
 
@@ -403,6 +414,22 @@ impl MSConfig {
     fn read() -> Result<Self, anyhow::Error> {
         let config = std::fs::read_to_string("msync.toml")?;
         Ok(toml::from_str::<MSConfig>(&config)?)
+    }
+
+    fn default_port() -> u16 {
+        3001
+    }
+
+    fn default_yt_dlp_rate() -> Duration {
+        Duration::from_secs(10)
+    }
+
+    fn default_cleanup_tag_rate() -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+
+    fn default_playlist_sync_rate() -> Duration {
+        Duration::from_secs(60 * 5)
     }
 }
 

@@ -1,6 +1,7 @@
 use std::sync::{LazyLock, Mutex};
 
 use chrono::{DateTime, Utc};
+use log::info;
 use rusqlite::{Connection, Params};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::from_rows;
@@ -8,6 +9,7 @@ use serde_rusqlite::from_rows;
 use crate::brainz::{BrainzMetadata, BrainzMultiSearch};
 
 pub static DB: LazyLock<DbState> = LazyLock::new(|| DbState::new());
+const DB_VERSION: u32 = 1;
 
 pub struct DbState {
     conn: Mutex<Connection>,
@@ -72,11 +74,40 @@ impl DbState {
         )
         .unwrap();
 
-        Self {
+        let state = Self {
             conn: Mutex::new(conn),
-        }
-    }
+        };
 
+        let cur_ver: u32 = state
+            .get_key("version")
+            .map(|v| v.parse().expect("Invalid version"))
+            .unwrap_or(0u32);
+
+        if cur_ver < DB_VERSION {
+            info!(
+                "Upgrading database from version {} to {}",
+                cur_ver, DB_VERSION
+            );
+
+            let mut new_ver = cur_ver;
+            if new_ver == 0 {
+                new_ver = 1;
+                {
+                    let con = &state.conn.lock().unwrap();
+                    con.execute(
+                        "ALTER TABLE status ADD COLUMN last_error TEXT DEFAULT NULL",
+                        [],
+                    )
+                    .unwrap();
+                }
+                state.set_key("version", &new_ver.to_string());
+            }
+
+            info!("Database upgrade complete");
+        }
+
+        state
+    }
     // YT_API
 
     pub fn set_yt_dlp(&self, video_id: &str, dlp: &str) {
@@ -245,9 +276,7 @@ impl DbState {
 
     pub fn get_all_videos(&self) -> Vec<VideoStatus> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result FROM status")
-            .unwrap();
+        let mut stmt = conn.prepare("SELECT * FROM status").unwrap();
         let rows = stmt
             .query_map([], Self::map_video_status)
             .unwrap()
@@ -273,29 +302,32 @@ impl DbState {
     }
 
     fn get_video_internal(conn: &Connection, video_id: &str) -> Option<VideoStatus> {
-        conn.query_row_and_then("SELECT video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result FROM status WHERE video_id = ?1",
+        conn.query_row_and_then(
+            "SELECT * FROM status WHERE video_id = ?1",
             &[video_id],
-            Self::map_video_status)
-            .get_single_row()
+            Self::map_video_status,
+        )
+        .get_single_row()
     }
 
     fn map_video_status(row: &rusqlite::Row) -> rusqlite::Result<VideoStatus> {
         Ok(VideoStatus {
-            video_id: row.get(0)?,
-            last_update: row.get(1)?,
-            fetch_time: row.get(2)?,
-            fetch_status: FetchStatus::try_from(row.get::<_, i64>(3)?).unwrap(),
+            video_id: row.get("video_id")?,
+            fetch_time: row.get("fetch_time")?,
+            fetch_status: FetchStatus::try_from(row.get::<_, i64>("fetch_status")?).unwrap(),
+            last_update: row.get("last_update")?,
             last_query: row
-                .get::<_, Option<String>>(4)?
+                .get::<_, Option<String>>("last_query")?
                 .map(|s| serde_json::from_str(&s).unwrap()),
             last_result: row
-                .get::<_, Option<String>>(5)?
+                .get::<_, Option<String>>("last_result")?
                 .map(|s| serde_json::from_str(&s).unwrap()),
+            last_error: row.get("last_error")?,
             override_query: row
-                .get::<_, Option<String>>(6)?
+                .get::<_, Option<String>>("override_query")?
                 .map(|s| serde_json::from_str(&s).unwrap()),
             override_result: row
-                .get::<_, Option<String>>(7)?
+                .get::<_, Option<String>>("override_result")?
                 .map(|s| serde_json::from_str(&s).unwrap()),
         })
     }
@@ -308,10 +340,10 @@ impl DbState {
     fn set_full_track_status_internal(conn: &Connection, status: &VideoStatus) {
         conn
             .execute(
-                "INSERT INTO status (video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO status (video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result, last_error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(video_id)
-                 DO UPDATE SET last_update = ?2, fetch_time = ?3, fetch_status = ?4, last_query = ?5, last_result = ?6, override_query = ?7, override_result = ?8",
+                 DO UPDATE SET last_update = ?2, fetch_time = ?3, fetch_status = ?4, last_query = ?5, last_result = ?6, override_query = ?7, override_result = ?8, last_error = ?9",
                 (
                     &status.video_id,
                     status.last_update,
@@ -321,6 +353,7 @@ impl DbState {
                     status.last_result.as_ref().map(|r| serde_json::to_string(r).unwrap()),
                     status.override_query.as_ref().map(|q| serde_json::to_string(q).unwrap()),
                     status.override_result.as_ref().map(|r| serde_json::to_string(r).unwrap()),
+                    status.last_error.as_ref(),
                 )
             )
             .unwrap();
@@ -448,10 +481,11 @@ pub enum FetchStatus {
 pub struct VideoStatus {
     pub video_id: String,
     pub fetch_time: u64,
-    pub last_update: u64,
     pub fetch_status: FetchStatus,
+    pub last_update: u64,
     pub last_query: Option<BrainzMultiSearch>,
     pub last_result: Option<BrainzMetadata>,
+    pub last_error: Option<String>,
     pub override_query: Option<BrainzMultiSearch>,
     pub override_result: Option<BrainzMetadata>,
 }

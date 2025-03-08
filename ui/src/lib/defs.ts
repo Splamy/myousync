@@ -9,6 +9,7 @@ export interface VideoData {
 	fetch_status: FetchStatus;
 	last_query?: BrainzMultiSearch;
 	last_result?: BrainzMetadata;
+	last_error?: string;
 	override_query?: BrainzMultiSearch;
 	override_result?: BrainzMetadata;
 }

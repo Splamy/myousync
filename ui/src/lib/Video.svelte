@@ -6,11 +6,21 @@
 		type BrainzMultiSearch,
 		type VideoData,
 	} from "./defs";
-	import { Button, Collapse, Icon, Card, Tooltip } from "svelte-ux";
+	import {
+		Button,
+		Collapse,
+		Icon,
+		Card,
+		Notification,
+		Tooltip,
+		Popover,
+	} from "svelte-ux";
+	import { mdiAlertOctagonOutline } from "@mdi/js";
 
 	import Bms from "./BMS.svelte";
 	import BRes from "./BRes.svelte";
 	import { state_to_color, state_to_icon } from "$lib";
+	import { crossfade, fade, fly } from "svelte/transition";
 
 	let { video }: { video: VideoData } = $props();
 
@@ -30,10 +40,16 @@
 	);
 
 	let display_text = $derived.by(() => {
-		if (video.last_result) {
+		if (video.override_result) {
+			return `OResult: ${video.override_result.title} - ${video.override_result.artist.join(
+				"; ",
+			)}`;
+		} else if (video.last_result) {
 			return `Result: ${video.last_result.title} - ${video.last_result.artist.join(
 				"; ",
 			)}`;
+		} else if (video.override_query) {
+			return `OQuery: ${video.override_query.title} - ${video.override_query.artist}`;
 		} else if (video.last_query) {
 			return `Query: ${video.last_query.title} - ${video.last_query.artist}`;
 		} else {
@@ -66,33 +82,52 @@
 	}
 
 	async function overrideQuery() {
-		const res = await fetch(`${API_URL}/video/${video.video_id}/query`, {
-			method: "POST",
-			mode: "cors",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${getAuth()}`,
-			},
-			body: JSON.stringify(override_query),
-		});
+		let res = await authFetch(
+			`${API_URL}/video/${video.video_id}/query`,
+			JSON.stringify(override_query),
+		);
 		if (res.ok) {
 			video.override_query = override_query;
 		}
 	}
 
 	async function overrideResult() {
-		const res = await fetch(`${API_URL}/video/${video.video_id}/result`, {
+		let res = await authFetch(
+			`${API_URL}/video/${video.video_id}/result`,
+			JSON.stringify(override_result),
+		);
+		if (res.ok) {
+			video.override_result = override_result;
+		}
+	}
+
+	async function retryFetch() {
+		await authFetch(`${API_URL}/video/${video.video_id}/retry_fetch`);
+	}
+
+	async function authFetch(url: string, body?: BodyInit) {
+		return await fetch(url, {
 			method: "POST",
 			mode: "cors",
 			headers: {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${getAuth()}`,
 			},
-			body: JSON.stringify(override_result),
+			body,
 		});
-		if (res.ok) {
-			video.override_result = override_result;
-		}
+	}
+
+	let copyPopover = $state(false);
+	let copyPopoverTimeout: NodeJS.Timeout;
+	function copyIdToClipboard(e: Event) {
+		e.stopPropagation();
+		let yturl = `https://www.youtube.com/watch?v=${video.video_id}`;
+		navigator.clipboard.writeText(yturl);
+		copyPopover = true;
+		clearTimeout(copyPopoverTimeout);
+		copyPopoverTimeout = setTimeout(() => {
+			copyPopover = false;
+		}, 1000);
 	}
 </script>
 
@@ -100,22 +135,35 @@
 	<Card>
 		<Collapse>
 			<div slot="trigger" class="flex-1 px-3 py-3">
-				<Tooltip title={video.fetch_status} placement="top">
+				<Tooltip title={video.fetch_status} placement="top" delay={100}>
 					<Icon data={state_icon} style={"color:" + state_color} />
 				</Tooltip>
-				<Button
-					class="font-mono"
-					color="accent"
-					variant="outline"
-					disabled
-				>
-					{video.video_id}</Button
-				>
+				<div class="inline-block">
+					<Popover bind:open={copyPopover} placement="top"
+						><div transition:fly={{ y: 10 }}>Copied!</div></Popover
+					>
+					<Button
+						class="font-mono"
+						color="accent"
+						variant="outline"
+						on:click={copyIdToClipboard}
+					>
+						{video.video_id}</Button
+					>
+				</div>
 				<span class="ml-1 text-center">
 					{display_text}
 				</span>
 			</div>
 			<div class="p-3 border-t">
+				{#if video.last_error}
+					<Notification
+						title={video.last_error}
+						icon={mdiAlertOctagonOutline}
+						color="danger"
+						variant="fill"
+					/>
+				{/if}
 				{#if video.fetch_status !== FetchStatus.FETCH_ERROR}
 					<Bms
 						search={video.last_query}
@@ -164,6 +212,11 @@
 					</div>
 				{:else}
 					<h3>Could not fetch video</h3>
+					<Button
+						on:click={retryFetch}
+						variant="fill"
+						color="secondary">Retry</Button
+					>
 				{/if}
 			</div>
 		</Collapse>

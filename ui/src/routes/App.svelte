@@ -110,7 +110,14 @@
 
 	$effect(() => {
 		if ($jwt && !hasInit) {
-			ws?.send($jwt);
+			try {
+				ws?.send($jwt);
+			} catch (e) {
+				if (connected === ConState.Connected) {
+					connected = ConState.Disconnected;
+					ws?.close();
+				}
+			}
 			hasInit = true;
 		}
 	});
@@ -220,17 +227,10 @@
 	</svelte:fragment>
 
 	<AppBar title="Myousync" class="bg-primary text-primary-content">
-		{#if connected === ConState.Disconnected}
+		{#if connected !== ConState.Connected}
 			<Notification
 				title="Connection Lost, Connecting..."
 				color="danger"
-				variant="fill"
-				class="ml-4"
-			/>
-		{:else if connected === ConState.Connecting}
-			<Notification
-				title="Connecting..."
-				color="warning"
 				variant="fill"
 				class="ml-4"
 			/>

@@ -21,7 +21,7 @@ pub enum YtDlpError {
     JsonEncodingErr(#[from] std::string::FromUtf8Error),
     #[error("")]
     JsonDeserializationErr(#[from] serde_json::Error),
-    #[error("YT-dlp returned an error")]
+    #[error("YT-dlp returned an error: {0}")]
     CommandError(String),
 }
 
@@ -52,7 +52,7 @@ pub async fn get(s: &MSState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
     let mut json = match serde_json::from_slice::<Value>(&dlp_output.stdout) {
         Ok(json) => json,
         Err(json_err) => {
-            let dlp_stderr = String::from_utf8(dlp_output.stderr)?;
+            let dlp_stderr = String::from_utf8(dlp_output.stderr)?.trim().to_string();
             error!("Got ERROR yt-dlp: {} | {}", json_err, dlp_stderr);
             return Err(YtDlpError::CommandError(dlp_stderr));
         }
