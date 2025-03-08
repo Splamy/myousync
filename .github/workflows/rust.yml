@@ -1,0 +1,45 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: oven-sh/setup-bun@v2
+    
+    - name: Build rust backend
+      run: |
+        cd myousync
+        cargo build --verbose
+
+    - name: Build ui
+      run: |
+        cd ui
+        bun install
+        bun --bun rsbuild build
+
+    - name: Pack
+      run: |
+        mkdir -p build/web
+        cp myousync/target/release/myousync build/
+        cp -r ui/dist/* build/web
+        chmod +x build/myousync
+
+    - name: 'Tar files'
+      run: |
+        cd build
+        tar -cvf ../myousync.tar ./*
+  
+    - uses: actions/upload-artifact@v4
+      with:
+        name: build
+        path: myousync.tar
