@@ -3,6 +3,7 @@ name: Rust
 on:
   push:
     branches: [ "main" ]
+    tags: [ "*" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -53,5 +54,6 @@ jobs:
 
     - name: Release
       uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
       with:
         files: myousync.tar
