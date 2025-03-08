@@ -1,11 +1,15 @@
+cd myousync
 cargo build --release
+cd ..
+
 cd ui
+bun install
 bun --bun rsbuild build
 cd ..
 
-rm -r target/build
-mkdir -p target/build
+rm -r build
+mkdir -p build
+mkdir -p build/web
 
-cp target/release/myousync.exe target/build/
-mkdir -p target/build/web
-cp -r ui/dist/* target/build/web
+cp myousync/target/release/myousync.exe build/
+cp -r ui/dist/* build/web

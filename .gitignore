@@ -1,3 +1,1 @@
-/target
-ytdata.db
-msync.toml
+build/
