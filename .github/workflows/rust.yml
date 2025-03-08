@@ -8,8 +8,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+
+
 jobs:
   build:
+    permissions:
+      contents: write
 
     runs-on: ubuntu-22.04
 
