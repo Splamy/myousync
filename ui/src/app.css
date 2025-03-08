@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* @source '../node_modules/svelte-ux*.{svelte,js}'; */
+
