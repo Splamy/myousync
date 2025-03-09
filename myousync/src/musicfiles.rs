@@ -90,18 +90,45 @@ pub fn move_file_to_library(s: &MSState, path: &Path, tags: &MetadataTags) -> an
 
     new_path.push(format!("{}.{}", &clean_title, &orig_extenstion));
 
-    if let Err(err_ren) = std::fs::rename(path, &new_path) {
-        if let Ok(_) = std::fs::copy(path, &new_path) {
-            std::fs::remove_file(path)
-                .map_err(|e| anyhow::anyhow!("Error delete after copy file: {}", e))?;
-        } else {
-            return Err(anyhow::anyhow!("Error moving file: {}", err_ren));
+    match std::fs::rename(path, &new_path) {
+        Ok(_) => {
+            cleanup_directory(s, path);
         }
+        Err(err_ren) => match std::fs::copy(path, &new_path) {
+            Ok(_) => {
+                delete_file(s, path)
+                    .map_err(|e| anyhow::anyhow!("Error delete after copy file: {}", e))?;
+            }
+            Err(_) => return Err(anyhow::anyhow!("Error moving file: {}", err_ren)),
+        },
     }
 
-    // delete empty directories
-    let mut parent = path.parent();
+    Ok(())
+}
+
+pub fn delete_file(s: &MSState, path: &Path) -> anyhow::Result<()> {
+    if !path.starts_with(&s.config.music) && !path.starts_with(&s.config.temp) {
+        // not in music or temp directory
+        return Err(anyhow::anyhow!("Not in music or temp directory"));
+    }
+    match std::fs::remove_file(path) {
+        Ok(_) => {
+            cleanup_directory(s, path);
+            Ok(())
+        }
+        Err(e) => Err(anyhow::anyhow!("Error deleting file: {}", e)),
+    }
+}
+
+fn cleanup_directory(s: &MSState, file: &Path) {
+    if !file.starts_with(&s.config.music) && !file.starts_with(&s.config.temp) {
+        // not in music or temp directory
+        return;
+    }
+
+    let mut parent = file.parent();
     while let Some(p) = parent {
+        // don't delete top level music or temp directory
         if s.config.music.starts_with(p) || s.config.temp.starts_with(p) {
             break;
         }
@@ -117,8 +144,6 @@ pub fn move_file_to_library(s: &MSState, path: &Path, tags: &MetadataTags) -> an
             break;
         }
     }
-
-    Ok(())
 }
 
 static SANITIZE_OPTIONS: sanitise_file_name::Options<Option<char>> = sanitise_file_name::Options {

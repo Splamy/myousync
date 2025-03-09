@@ -450,8 +450,6 @@ pub struct AuthData {
     pub expires_at: i64,
 }
 
-// #[derive(Queryable, Identifiable, Selectable, Debug, PartialEq, Clone)]
-// #[diesel(table_name = playlists)]
 pub struct Playlist {
     pub playlist_id: String,
     pub etag: String,
@@ -475,6 +473,7 @@ pub enum FetchStatus {
     FetchError,
     BrainzError,
     Categorized,
+    Disabled,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -510,6 +509,7 @@ impl TryFrom<i64> for FetchStatus {
             2 => Ok(FetchStatus::FetchError),
             3 => Ok(FetchStatus::BrainzError),
             4 => Ok(FetchStatus::Categorized),
+            5 => Ok(FetchStatus::Disabled),
             _ => Err(()),
         }
     }

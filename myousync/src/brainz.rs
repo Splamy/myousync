@@ -109,8 +109,8 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
 
     let mut search: Vec<RecordingSearch> = vec![];
 
-    if  dlp.album.is_some() || dlp.artist.is_some() {
-        print!("Searching by native music info");
+    if dlp.album.is_some() || dlp.artist.is_some() {
+        debug!("Searching by native music info");
         search.push(RecordingSearch {
             title: QTerm::Exact(dlp.title.clone()),
             artist: QTerm::exact_option(&dlp.artist),
@@ -254,6 +254,7 @@ struct Recording {
     pub length: Option<i32>,
     pub artist_credit: Vec<ArtistCredit>,
     pub first_release_date: Option<String>,
+    #[serde(default)]
     pub releases: Vec<Release>,
 }
 

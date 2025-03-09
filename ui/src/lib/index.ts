@@ -7,6 +7,8 @@ import {
 	mdiDownload,
 	mdiBrain,
 	mdiTimerSandEmpty,
+	mdiClose,
+	mdiDownloadOff,
 } from "@mdi/js";
 
 export enum ConState {
@@ -23,7 +25,7 @@ export enum SortMode {
 	FailedFirst,
 }
 
-export const SortModes = [ SortMode.Unsorted, SortMode.VideoId, SortMode.FetchTime, SortMode.LastUpdate, SortMode.FailedFirst ] as const;
+export const SortModes = [SortMode.Unsorted, SortMode.VideoId, SortMode.FetchTime, SortMode.LastUpdate, SortMode.FailedFirst] as const;
 
 export function state_to_icon(state: FetchStatus) {
 	switch (state) {
@@ -37,6 +39,8 @@ export function state_to_icon(state: FetchStatus) {
 			return mdiBrain;
 		case FetchStatus.CATEGORIZED:
 			return mdiCheckCircleOutline;
+		case FetchStatus.DISABLED:
+			return mdiDownloadOff;
 		default:
 			return mdiAlertOutline;
 	}
@@ -54,6 +58,8 @@ export function state_to_color(state: FetchStatus) {
 			return "red";
 		case FetchStatus.CATEGORIZED:
 			return "green";
+		case FetchStatus.DISABLED:
+			return "grey";
 		default:
 			return "yellow";
 	}

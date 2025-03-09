@@ -141,6 +141,29 @@ async fn run_server(s: &MSState) {
             .layer(cors_layer.clone())
             .layer(middleware::from_fn(auth::auth)),
         )
+        .route(
+            "/video/{video}/delete",
+            axum::routing::post({
+                let s = s.clone();
+                async move |Path(video_id): Path<String>| {
+                    MSState::push_override(&video_id, |v| {
+                        if let Some(file) = musicfiles::find_local_file(&s, &video_id) {
+                            if let Err(err) = musicfiles::delete_file(&s, &file) {
+                                let err = err.to_string();
+                                error!("Error deleting file: {:?}", err);
+                                v.last_error = Some(err);
+                                return false;
+                            }
+                        }
+
+                        v.fetch_status = FetchStatus::Disabled;
+                        true
+                    });
+                }
+            })
+            .layer(cors_layer.clone())
+            .layer(middleware::from_fn(auth::auth)),
+        )
         .route("/ws", axum::routing::get(ws_handler))
         .fallback_service(ServeDir::new("web"));
 
@@ -310,10 +333,6 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
         .get_video(&video_id)
         .ok_or_else(|| anyhow!("Video not found"))?;
 
-    if status.fetch_status == FetchStatus::Categorized {
-        info!("Video {} already categorized", status.video_id);
-        return Ok(());
-    }
     info!("checking vid {}", status.video_id);
 
     let dlp_file: YtDlpResponse = match status.fetch_status {
@@ -330,7 +349,16 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
             }
         },
         FetchStatus::FetchError => {
-            return Err(anyhow!("Video in fetch error state"));
+            info!("Video {} fetch error", status.video_id);
+            return Ok(());
+        }
+        FetchStatus::Categorized => {
+            info!("Video {} already categorized", status.video_id);
+            return Ok(());
+        }
+        FetchStatus::Disabled => {
+            info!("Video {} disabled", status.video_id);
+            return Ok(());
         }
         _ => {
             if let Some(dlp_file) = ytdlp::try_get_metadata(&status.video_id) {

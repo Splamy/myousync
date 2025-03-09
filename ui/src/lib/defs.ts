@@ -34,6 +34,7 @@ export const enum FetchStatus {
 	FETCH_ERROR = "FetchError",
 	BRAINZ_ERROR = "BrainzError",
 	CATEGORIZED = "Categorized",
+	DISABLED = "Disabled",
 }
 
 export function BrainzMetadata_contains(data: BrainzMetadata, text: string) {

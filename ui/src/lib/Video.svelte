@@ -14,13 +14,17 @@
 		Notification,
 		Tooltip,
 		Popover,
+		Toggle,
+		Dialog,
 	} from "svelte-ux";
-	import { mdiAlertOctagonOutline } from "@mdi/js";
+	import { mdiAlertOctagonOutline, mdiTrashCan, mdiReload } from "@mdi/js";
 
 	import Bms from "./BMS.svelte";
 	import BRes from "./BRes.svelte";
 	import { state_to_color, state_to_icon } from "$lib";
 	import { crossfade, fade, fly } from "svelte/transition";
+
+	const NO_LOCAL_FILE = [FetchStatus.FETCH_ERROR, FetchStatus.DISABLED];
 
 	let { video }: { video: VideoData } = $props();
 
@@ -82,9 +86,15 @@
 	}
 
 	async function overrideQuery() {
+		let body;
+		if (!override_query.title && !override_query.trackid) {
+			body = JSON.stringify(null);
+		} else {
+			body = JSON.stringify(override_query);
+		}
 		let res = await authFetch(
 			`${API_URL}/video/${video.video_id}/query`,
-			JSON.stringify(override_query),
+			body,
 		);
 		if (res.ok) {
 			video.override_query = override_query;
@@ -92,9 +102,15 @@
 	}
 
 	async function overrideResult() {
+		let body;
+		if (!override_result.title && !override_result.brainz_recording_id) {
+			body = JSON.stringify(null);
+		} else {
+			body = JSON.stringify(override_result);
+		}
 		let res = await authFetch(
 			`${API_URL}/video/${video.video_id}/result`,
-			JSON.stringify(override_result),
+			body,
 		);
 		if (res.ok) {
 			video.override_result = override_result;
@@ -103,6 +119,10 @@
 
 	async function retryFetch() {
 		await authFetch(`${API_URL}/video/${video.video_id}/retry_fetch`);
+	}
+
+	async function deleteVideo() {
+		await authFetch(`${API_URL}/video/${video.video_id}/delete`);
 	}
 
 	async function authFetch(url: string, body?: BodyInit) {
@@ -122,7 +142,11 @@
 	function copyIdToClipboard(e: Event) {
 		e.stopPropagation();
 		let yturl = `https://www.youtube.com/watch?v=${video.video_id}`;
-		navigator.clipboard.writeText(yturl);
+		try {
+			navigator.clipboard.writeText(yturl);
+		} catch (e) {
+			console.error(e);
+		}
 		copyPopover = true;
 		clearTimeout(copyPopoverTimeout);
 		copyPopoverTimeout = setTimeout(() => {
@@ -164,7 +188,44 @@
 						variant="fill"
 					/>
 				{/if}
-				{#if video.fetch_status !== FetchStatus.FETCH_ERROR}
+				<div class="flex justify-end gap-3">
+					{#if !NO_LOCAL_FILE.includes(video.fetch_status)}
+						<Toggle let:on={open} let:toggle let:toggleOff>
+							<Button
+								icon={mdiTrashCan}
+								on:click={toggle}
+								variant="outline"
+								color="danger">Delete</Button
+							>
+							<Dialog {open} on:close={toggleOff}>
+								<div slot="title">Delete {video.video_id}</div>
+								<div class="px-6 py-3">
+									Delete and disable Video
+								</div>
+								<div slot="actions">
+									<Button
+										on:click={deleteVideo}
+										variant="fill"
+										color="danger"
+									>
+										Yes, delete item
+									</Button>
+									<Button>Cancel</Button>
+								</div>
+							</Dialog>
+						</Toggle>
+					{/if}
+
+					{#if NO_LOCAL_FILE.includes(video.fetch_status)}
+						<Button
+							icon={mdiReload}
+							on:click={retryFetch}
+							variant="outline"
+							color="secondary">Retry</Button
+						>
+					{/if}
+				</div>
+				{#if !NO_LOCAL_FILE.includes(video.fetch_status)}
 					<Bms
 						search={video.last_query}
 						bind:override={override_query}
@@ -172,19 +233,19 @@
 					<div class="flex justify-end mt-3 gap-3">
 						<Button
 							on:click={copyQuery}
-							variant="fill"
-							color="neutral">Copy Input</Button
+							variant="outline"
+							color="default">Copy Input</Button
 						>
 
 						<Button
 							on:click={clearQuery}
-							variant="fill"
-							color="neutral">Clear Input</Button
+							variant="outline"
+							color="default">Clear Input</Button
 						>
 
 						<Button
 							on:click={overrideQuery}
-							variant="fill"
+							variant="fill-outline"
 							color="secondary">Run Query</Button
 						>
 					</div>
@@ -196,27 +257,22 @@
 					<div class="flex justify-end mt-3 gap-3">
 						<Button
 							on:click={copyResult}
-							variant="fill"
-							color="neutral">Copy Result</Button
+							variant="outline"
+							color="default">Copy Result</Button
 						>
 						<Button
 							on:click={clearResult}
-							variant="fill"
-							color="neutral">Clear Result</Button
+							variant="outline"
+							color="default">Clear Result</Button
 						>
 						<Button
 							on:click={overrideResult}
-							variant="fill"
+							variant="fill-outline"
 							color="secondary">Apply Result</Button
 						>
 					</div>
 				{:else}
 					<h3>Could not fetch video</h3>
-					<Button
-						on:click={retryFetch}
-						variant="fill"
-						color="secondary">Retry</Button
-					>
 				{/if}
 			</div>
 		</Collapse>
