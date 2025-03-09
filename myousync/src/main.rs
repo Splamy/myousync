@@ -152,7 +152,7 @@ async fn run_server(s: &MSState) {
                 let s = s.clone();
                 async move |Path(video_id): Path<String>| {
                     MSState::push_override(&video_id, |v| {
-                        if let Some(file) = musicfiles::find_local_file(&s, &video_id) {
+                        if let Some(file) = find_file(&s, &video_id) {
                             if let Err(err) = musicfiles::delete_file(&s, &file) {
                                 let err = err.to_string();
                                 error!("Error deleting file: {:?}", err);
@@ -174,7 +174,7 @@ async fn run_server(s: &MSState) {
             axum::routing::get({
                 let s = s.clone();
                 async move |headers: axum::http::HeaderMap, Path(video_id): Path<String>| {
-                    if let Some(path) = musicfiles::find_local_file(&s, &video_id) {
+                    if let Some(path) = find_file(&s, &video_id) {
                         let mut req = Request::new(Body::empty());
                         *req.headers_mut() = headers;
                         return ServeFile::new(path).try_call(req).await.map_err(|e| {
@@ -432,9 +432,7 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
     };
     MSState::push_update(&mut status);
 
-    let file = ytdlp::find_local_file(&s, &status.video_id)
-        .or_else(|| musicfiles::find_local_file(&s, &status.video_id))
-        .ok_or_else(|| anyhow!("No file found"))?;
+    let file = find_file(&s, &status.video_id).ok_or_else(|| anyhow!("No file found"))?;
 
     let tags = MetadataTags {
         youtube_id: status.video_id.clone(),
@@ -450,6 +448,10 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
     MSState::push_update_state(&mut status, FetchStatus::Categorized);
 
     Ok(())
+}
+
+fn find_file(s: &MSState, video_id: &str) -> Option<PathBuf> {
+    ytdlp::find_local_file(&s, video_id).or_else(|| musicfiles::find_local_file(&s, video_id))
 }
 
 #[derive(Debug, Clone, Deserialize)]
