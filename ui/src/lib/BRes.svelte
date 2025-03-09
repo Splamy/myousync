@@ -11,11 +11,11 @@
 	} = $props();
 
 	let result_artist = $derived(result?.artist.join("; "));
+	let artist_join = $derived(override.artist.join("; "));
 
-	let artist_join = $state(override.artist.join("; "));
-	$effect(() => {
-		override.artist = artist_join.split(";").map((x) => x.trim());
-	});
+	function handle_artist_change(e: Event) {
+		override.artist = (e.target as HTMLInputElement).value.split(";").map((x) => x.trim());
+	}
 </script>
 
 <div class="grid grid-cols-4 gap-2">
@@ -38,6 +38,6 @@
 		bind:value={override.brainz_recording_id}
 	/>
 	<TextField placeholder="Title" bind:value={override.title} />
-	<TextField placeholder="Artist" bind:value={artist_join} />
+	<TextField placeholder="Artist" value={artist_join} on:change={handle_artist_change} />
 	<TextField placeholder="Album" bind:value={override.album} />
 </div>

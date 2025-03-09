@@ -83,7 +83,7 @@
 			case SortMode.LastUpdate:
 				rlist.sort((a, b) => b.last_update - a.last_update);
 				break;
-			case SortMode.Title:
+			case SortMode.VideoId:
 				rlist.sort((a, b) => a.video_id.localeCompare(b.video_id));
 				break;
 			case SortMode.FailedFirst:

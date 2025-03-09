@@ -285,6 +285,12 @@ async fn sync_all(s: &MSState) {
                     MSState::push_update(&mut VideoStatus {
                         video_id: item.video_id.to_owned(),
                         fetch_status: FetchStatus::NotFetched,
+                        last_query: Some(BrainzMultiSearch {
+                            trackid: None,
+                            title: item.title.clone(),
+                            artist: Some(item.artist.clone()),
+                            album: None,
+                        }),
                         ..Default::default()
                     });
 
@@ -384,6 +390,7 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
 
     musicfiles::move_file_to_library(s, &file, &tags)?;
 
+    status.last_error = None;
     MSState::push_update_state(&mut status, FetchStatus::Categorized);
 
     Ok(())

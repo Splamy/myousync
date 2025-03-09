@@ -3,9 +3,7 @@
 import { FetchStatus } from "./defs";
 import {
 	mdiCheckCircleOutline,
-	mdiInformationOutline,
 	mdiAlertOutline,
-	mdiAlertOctagonOutline,
 	mdiDownload,
 	mdiBrain,
 	mdiTimerSandEmpty,
@@ -19,13 +17,13 @@ export enum ConState {
 
 export enum SortMode {
 	Unsorted,
-	Title,
+	VideoId,
 	FetchTime,
 	LastUpdate,
 	FailedFirst,
 }
 
-export const SortModes = [ SortMode.Unsorted, SortMode.Title, SortMode.FetchTime, SortMode.LastUpdate, SortMode.FailedFirst ] as const;
+export const SortModes = [ SortMode.Unsorted, SortMode.VideoId, SortMode.FetchTime, SortMode.LastUpdate, SortMode.FailedFirst ] as const;
 
 export function state_to_icon(state: FetchStatus) {
 	switch (state) {
