@@ -43,13 +43,13 @@ async fn main() {
 
     let s = MSState::new();
     tokio::select! {
-        _ = run_server() => {},
+        _ = run_server(&s) => {},
         _ = playlist_sync_loop(&s) => {},
         _ = music_tag_loop(&s) => {},
     }
 }
 
-async fn run_server() {
+async fn run_server(s: &MSState) {
     let cors_layer = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_headers(vec!["Authorization".parse().unwrap(), "*".parse().unwrap()])
@@ -144,7 +144,8 @@ async fn run_server() {
         .route("/ws", axum::routing::get(ws_handler))
         .fallback_service(ServeDir::new("web"));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
+    let endpoint = format!("0.0.0.0:{}", s.config.port);
+    let listener = tokio::net::TcpListener::bind(endpoint).await.unwrap();
     info!(
         "Listening on: http://{}",
         listener
