@@ -13,8 +13,8 @@
 	let result_artist = $derived(result?.artist.join("; "));
 	let artist_join = $derived(override.artist.join("; "));
 
-	function handle_artist_change(e: Event) {
-		override.artist = (e.target as HTMLInputElement).value.split(";").map((x) => x.trim());
+	function handle_artist_change(e: CustomEvent<{ value: any }>) {
+		override.artist = (e.detail.value as string).split(";").map((x) => x.trim());
 	}
 </script>
 
@@ -38,6 +38,10 @@
 		bind:value={override.brainz_recording_id}
 	/>
 	<TextField placeholder="Title" bind:value={override.title} />
-	<TextField placeholder="Artist" value={artist_join} on:change={handle_artist_change} />
+	<TextField
+		placeholder="Artist"
+		value={artist_join}
+		on:change={handle_artist_change}
+	/>
 	<TextField placeholder="Album" bind:value={override.album} />
 </div>
