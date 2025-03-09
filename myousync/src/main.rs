@@ -9,14 +9,16 @@ mod ytdlp;
 
 use anyhow::anyhow;
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocketUpgrade},
         Path,
     },
+    http::{Request, StatusCode},
     middleware,
     response::IntoResponse,
+    Json, Router,
 };
-use axum::{Json, Router};
 use brainz::{BrainzMetadata, BrainzMultiSearch};
 use chrono::Utc;
 use dbdata::{FetchStatus, VideoStatus};
@@ -27,7 +29,10 @@ use reqwest::Method;
 use serde::Deserialize;
 use std::{collections::HashSet, future::Future, path::PathBuf, sync::LazyLock, time::Duration};
 use tokio::sync::broadcast::Sender;
-use tower_http::{cors::CorsLayer, services::ServeDir};
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+};
 use ytdlp::YtDlpResponse;
 
 static NOTIFY_MUSIC_UPDATE: LazyLock<Sender<String>> =
@@ -163,6 +168,28 @@ async fn run_server(s: &MSState) {
             })
             .layer(cors_layer.clone())
             .layer(middleware::from_fn(auth::auth)),
+        )
+        .route(
+            "/video/{video}/preview",
+            axum::routing::get({
+                let s = s.clone();
+                async move |headers: axum::http::HeaderMap, Path(video_id): Path<String>| {
+                    if let Some(path) = musicfiles::find_local_file(&s, &video_id) {
+                        let mut req = Request::new(Body::empty());
+                        *req.headers_mut() = headers;
+                        return ServeFile::new(path).try_call(req).await.map_err(|e| {
+                            error!("Error serving file: {:?}", e);
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Error serving file"),
+                            )
+                        });
+                    }
+
+                    return Err((StatusCode::NOT_FOUND, format!("File not found")));
+                }
+            })
+            .layer(cors_layer.clone()), //.layer(middleware::from_fn(auth::auth)),
         )
         .route("/ws", axum::routing::get(ws_handler))
         .fallback_service(ServeDir::new("web"));

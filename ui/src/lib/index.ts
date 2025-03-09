@@ -64,3 +64,7 @@ export function state_to_color(state: FetchStatus) {
 			return "yellow";
 	}
 }
+
+export const UiState = {
+	volume: 0.5,
+};

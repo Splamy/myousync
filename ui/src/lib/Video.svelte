@@ -21,7 +21,7 @@
 
 	import Bms from "./BMS.svelte";
 	import BRes from "./BRes.svelte";
-	import { state_to_color, state_to_icon } from "$lib";
+	import { state_to_color, state_to_icon, UiState } from "$lib";
 	import { crossfade, fade, fly } from "svelte/transition";
 
 	const NO_LOCAL_FILE = [FetchStatus.FETCH_ERROR, FetchStatus.DISABLED];
@@ -153,6 +153,10 @@
 			copyPopover = false;
 		}, 1000);
 	}
+
+	function handle_volume_change(e: Event) {
+		UiState.volume = (e.target as HTMLAudioElement).volume;
+	}
 </script>
 
 <div class="px-3">
@@ -188,7 +192,23 @@
 						variant="fill"
 					/>
 				{/if}
-				<div class="flex justify-end gap-3">
+				<div class="flex gap-3">
+					<div>
+						<audio
+							controls
+							volume={UiState.volume}
+							onvolumechange={handle_volume_change}
+						>
+							<source
+								src={`${API_URL}/video/${video.video_id}/preview`}
+								type="audio/mpeg"
+							/>
+							Your browser does not support the audio element.
+						</audio>
+					</div>
+
+					<div class="flex-1"></div>
+
 					{#if !NO_LOCAL_FILE.includes(video.fetch_status)}
 						<Toggle let:on={open} let:toggle let:toggleOff>
 							<Button
