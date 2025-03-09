@@ -32,10 +32,12 @@
 	const CAT_FAILED = [FetchStatus.FETCH_ERROR, FetchStatus.BRAINZ_ERROR];
 	const CAT_FETCHING = [FetchStatus.NOT_FETCHED, FetchStatus.FETCHED];
 	const CAT_OK = [FetchStatus.CATEGORIZED];
+	const CAT_DISABLED = [FetchStatus.DISABLED];
 
 	let show_ok = $state(true);
 	let show_err = $state(true);
 	let show_fetching = $state(true);
+	let show_disabled = $state(true);
 	let show_filter = $state("");
 	let show_sort = $state(SortMode.Unsorted);
 
@@ -47,6 +49,8 @@
 				continue;
 			if (CAT_OK.includes(v.fetch_status) && !show_ok) continue;
 			if (CAT_FAILED.includes(v.fetch_status) && !show_err) continue;
+			if (CAT_DISABLED.includes(v.fetch_status) && !show_disabled)
+				continue;
 
 			if (show_filter) {
 				let matches =
@@ -179,7 +183,7 @@
 	});
 </script>
 
-<AppLayout areas="'header header' 'aside main'">
+<AppLayout areas="'header header' 'aside main'" classes={ { nav: "bg-surface-300 pr-4" } }>
 	<svelte:fragment slot="nav">
 		<div class="pt-4 pl-4 grid gap-3">
 			<TextField
@@ -207,6 +211,10 @@
 			<label class="flex gap-2 items-center justify-end text-sm">
 				Unfetched
 				<Switch bind:checked={show_fetching} color="warning" />
+			</label>
+			<label class="flex gap-2 items-center justify-end text-sm">
+				Disabled
+				<Switch bind:checked={show_disabled} color="warning" />
 			</label>
 
 			<Field label="Sort">

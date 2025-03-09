@@ -87,7 +87,7 @@ async fn run_server(s: &MSState) {
             axum::routing::post({
                 async move |Path(video_id): Path<String>| {
                     MSState::push_override(&video_id, |v| {
-                        if v.fetch_status != FetchStatus::FetchError {
+                        if v.is_downloaded() {
                             return false;
                         }
                         v.fetch_status = FetchStatus::NotFetched;

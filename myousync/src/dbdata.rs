@@ -495,7 +495,9 @@ impl VideoStatus {
     }
 
     pub fn is_downloaded(&self) -> bool {
-        self.fetch_status != FetchStatus::NotFetched && self.fetch_status != FetchStatus::FetchError
+        self.fetch_status != FetchStatus::NotFetched
+            && self.fetch_status != FetchStatus::FetchError
+            && self.fetch_status != FetchStatus::Disabled
     }
 }
 
