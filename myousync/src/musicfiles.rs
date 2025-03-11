@@ -13,11 +13,11 @@ pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Resul
 
     test_tag.set_title(&tags.brainz.title);
     test_tag.set_artist(&tags.brainz.artist.join("; "));
-    test_tag.set_album_info(Album {
-        title: Some(tags.brainz.album.clone().unwrap_or_default()),
-        artist: Some(tags.brainz.artist.join("; ")),
-        ..Default::default()
-    })?;
+    let mut album = test_tag.get_album_info().unwrap_or(Album::default());
+    album.title = Some(tags.brainz.album.clone().unwrap_or_default());
+    album.artist = Some(tags.brainz.artist.join("; "));
+    test_tag.remove_all_album_info();
+    test_tag.set_album_info(album)?;
     test_tag.set_comment("youtube_id", tags.youtube_id.clone());
 
     if let Some(brainz_id) = tags.brainz.brainz_recording_id.as_deref() {
