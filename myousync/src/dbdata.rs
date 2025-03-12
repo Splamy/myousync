@@ -266,14 +266,13 @@ impl DbState {
         video_id: &str,
         modify: F,
     ) -> Option<VideoStatus> {
-        let conn = self.conn.lock().unwrap();
-        if let Some(mut video) = Self::get_video_internal(&conn, video_id) {
+        if let Some(mut video) = Self::get_video(&self, video_id) {
             let save = modify(&mut video);
             if !save {
                 return None;
             }
             video.update_now();
-            Self::set_full_track_status_internal(&conn, &video);
+            Self::set_full_track_status(&self, &video);
             Some(video)
         } else {
             None
