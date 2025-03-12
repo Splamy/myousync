@@ -1,6 +1,6 @@
 use std::{io, mem};
 
-use crate::{net::CLIENT, MSConfig};
+use crate::{net::CLIENT, MsConfig};
 use chrono::TimeDelta;
 use log::{debug, info};
 use serde::Deserialize;
@@ -30,7 +30,7 @@ pub enum YTError {
     Unknown,
 }
 
-pub async fn get_auth(config: &MSConfig) -> Result<AuthData, YTError> {
+pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
     if let Some(data) = dbdata::DB.try_get_auth() {
         debug!("Found YT Auth");
 
@@ -43,9 +43,9 @@ pub async fn get_auth(config: &MSConfig) -> Result<AuthData, YTError> {
 
         let mut form_data = String::new();
         form_data.push_str("client_id=");
-        form_data.push_str(&urlencoding::encode(&config.yt_client_id));
+        form_data.push_str(&urlencoding::encode(&config.youtube.client_id));
         form_data.push_str("&client_secret=");
-        form_data.push_str(&urlencoding::encode(&config.yt_client_secret));
+        form_data.push_str(&urlencoding::encode(&config.youtube.client_secret));
         form_data.push_str("&refresh_token=");
         form_data.push_str(&urlencoding::encode(&data.refresh_token));
         form_data.push_str("&grant_type=refresh_token");
@@ -81,7 +81,7 @@ pub async fn get_auth(config: &MSConfig) -> Result<AuthData, YTError> {
 
     let mut form_data = String::new();
     form_data.push_str("client_id=");
-    form_data.push_str(&urlencoding::encode(&config.yt_client_id));
+    form_data.push_str(&urlencoding::encode(&config.youtube.client_id));
     form_data.push_str("&scope=");
     form_data.push_str(&urlencoding::encode(
         "https://www.googleapis.com/auth/youtube",
@@ -103,9 +103,9 @@ pub async fn get_auth(config: &MSConfig) -> Result<AuthData, YTError> {
 
     let mut form_data = String::new();
     form_data.push_str("client_id=");
-    form_data.push_str(&urlencoding::encode(&config.yt_client_id));
+    form_data.push_str(&urlencoding::encode(&config.youtube.client_id));
     form_data.push_str("&client_secret=");
-    form_data.push_str(&urlencoding::encode(&config.yt_client_secret));
+    form_data.push_str(&urlencoding::encode(&config.youtube.client_secret));
     form_data.push_str("&device_code=");
     form_data.push_str(&urlencoding::encode(&code_response.device_code));
     form_data.push_str("&grant_type=urn:ietf:params:oauth:grant-type:device_code");
@@ -162,7 +162,7 @@ pub async fn get_auth(config: &MSConfig) -> Result<AuthData, YTError> {
     return Err(YTError::AuthTimeExceeded);
 }
 
-pub async fn get_playlist(config: &MSConfig, playlist_id: &str) -> Result<Playlist, YTError> {
+pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playlist, YTError> {
     let maybe_cached_playlist = dbdata::DB.try_get_playlist(playlist_id);
 
     if maybe_cached_playlist

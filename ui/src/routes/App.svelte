@@ -22,6 +22,8 @@
 		ToggleGroup,
 		ToggleOption,
 		Field,
+		Toggle,
+		Dialog,
 	} from "svelte-ux";
 	import AuthForm from "$lib/AuthForm.svelte";
 	import { AUTH } from "$lib/auth";
@@ -163,6 +165,18 @@
 		};
 	}
 
+	function reindexAllInView() {
+		let ids = sorted_videos.map((v) => v.video_id);
+		fetch(`${API_URL}/reindex`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${$jwt}`,
+			},
+			body: JSON.stringify(ids),
+		});
+	}
+
 	onMount(() => {
 		tryConnectWs();
 
@@ -183,7 +197,10 @@
 	});
 </script>
 
-<AppLayout areas="'header header' 'aside main'" classes={ { nav: "bg-surface-300 pr-4" } }>
+<AppLayout
+	areas="'header header' 'aside main'"
+	classes={{ nav: "bg-surface-300 pr-4" }}
+>
 	<svelte:fragment slot="nav">
 		<div class="pt-4 pl-4 grid gap-3">
 			<TextField
@@ -231,6 +248,30 @@
 					{/each}
 				</ToggleGroup>
 			</Field>
+
+			<Toggle let:on={open} let:toggle let:toggleOff>
+				<Button on:click={toggle} variant="outline" color="danger"
+					>Reindex all in View</Button
+				>
+				<Dialog {open} on:close={toggleOff}>
+					<div slot="title">Reindex all in view?</div>
+					<div class="px-6 py-3">
+						Reindexing {sorted_videos.filter((x) =>
+							CAT_OK.includes(x.fetch_status),
+						).length} videos
+					</div>
+					<div slot="actions">
+						<Button
+							on:click={reindexAllInView}
+							variant="fill"
+							color="danger"
+						>
+							Start Reindex
+						</Button>
+						<Button>Cancel</Button>
+					</div>
+				</Dialog>
+			</Toggle>
 		</div>
 	</svelte:fragment>
 

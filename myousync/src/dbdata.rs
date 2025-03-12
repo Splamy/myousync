@@ -114,6 +114,12 @@ impl DbState {
         self.set_ytdata(video_id, dlp, "ytdlp");
     }
 
+    pub fn delete_yt_data(&self, video_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM ytdata WHERE video_id = ?1", &[video_id])
+            .unwrap();
+    }
+
     fn set_ytdata(&self, video_id: &str, data: &str, col: &str) {
         let conn = self.conn.lock().unwrap();
         let query = format!(
@@ -289,6 +295,14 @@ impl DbState {
         self.all("SELECT video_id FROM status", [])
     }
 
+    pub fn get_video_fetch_status(&self, video_id: &str) -> Option<FetchStatus> {
+        self.single::<i64, _>(
+            "SELECT fetch_status FROM status WHERE video_id = ?1",
+            &[video_id],
+        )
+        .and_then(|s| FetchStatus::try_from(s).ok())
+    }
+
     pub fn get_all_unprocessed_ids(&self) -> Vec<String> {
         self.all(
             "SELECT video_id FROM status WHERE fetch_status IN (0, 1)",
@@ -357,6 +371,21 @@ impl DbState {
                 )
             )
             .unwrap();
+    }
+
+    pub fn set_videos_reindex<T: AsRef<str>>(&self, video_ids: &[T]) {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+
+        for video_id in video_ids {
+            conn.execute(
+                "UPDATE status SET fetch_status = 1 WHERE video_id = ?1 AND fetch_status = 4",
+                (video_id.as_ref(),),
+            )
+            .unwrap();
+        }
+
+        tx.commit().unwrap();
     }
 
     // BRAINZ

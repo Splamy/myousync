@@ -23,6 +23,8 @@
 	import BRes from "./BRes.svelte";
 	import { state_to_color, state_to_icon, UiState } from "$lib";
 	import { crossfade, fade, fly } from "svelte/transition";
+	import { AUTH } from "./auth";
+	import { get } from "svelte/store";
 
 	const NO_LOCAL_FILE = [FetchStatus.FETCH_ERROR, FetchStatus.DISABLED];
 
@@ -62,7 +64,7 @@
 	});
 
 	function getAuth() {
-		return localStorage.getItem("jwt");
+		return get(AUTH.jwt);
 	}
 
 	function copyQuery() {

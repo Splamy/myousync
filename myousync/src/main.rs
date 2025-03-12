@@ -27,7 +27,13 @@ use log::{debug, error, info, warn};
 use musicfiles::MetadataTags;
 use reqwest::Method;
 use serde::Deserialize;
-use std::{collections::HashSet, future::Future, path::PathBuf, sync::LazyLock, time::Duration};
+use std::{
+    collections::HashSet,
+    future::Future,
+    path::PathBuf,
+    sync::{Arc, LazyLock, Mutex},
+    time::Duration,
+};
 use tokio::sync::broadcast::Sender;
 use tower_http::{
     cors::CorsLayer,
@@ -46,7 +52,7 @@ static TRIGGER_PLAYLIST_SYNC: LazyLock<Sender<()>> =
 async fn main() {
     colog::init();
 
-    let s = MSState::new();
+    let s = MsState::new();
     tokio::select! {
         _ = run_server(&s) => {},
         _ = playlist_sync_loop(&s) => {},
@@ -54,7 +60,7 @@ async fn main() {
     }
 }
 
-async fn run_server(s: &MSState) {
+async fn run_server(s: &MsState) {
     let cors_layer = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_headers(vec!["Authorization".parse().unwrap(), "*".parse().unwrap()])
@@ -76,7 +82,18 @@ async fn run_server(s: &MSState) {
             "/trigger_sync",
             axum::routing::post({
                 async move || {
-                    MSState::trigger_sync();
+                    MsState::trigger_sync();
+                }
+            })
+            .layer(cors_layer.clone())
+            .layer(middleware::from_fn(auth::auth)),
+        )
+        .route(
+            "/reindex",
+            axum::routing::post({
+                async move |Json(video_ids): Json<Vec<String>>| {
+                    dbdata::DB.set_videos_reindex(&video_ids);
+                    MsState::trigger_tagger();
                 }
             })
             .layer(cors_layer.clone())
@@ -86,7 +103,7 @@ async fn run_server(s: &MSState) {
             "/video/{video}/retry_fetch",
             axum::routing::post({
                 async move |Path(video_id): Path<String>| {
-                    MSState::push_override(&video_id, |v| {
+                    MsState::push_override(&video_id, |v| {
                         if v.is_downloaded() {
                             return false;
                         }
@@ -103,7 +120,7 @@ async fn run_server(s: &MSState) {
             axum::routing::post({
                 async move |Path(video_id): Path<String>,
                             Json(query): Json<Option<BrainzMultiSearch>>| {
-                    MSState::push_override(&video_id, |v| {
+                    MsState::push_override(&video_id, |v| {
                         if !v.is_downloaded() {
                             return false;
                         }
@@ -127,7 +144,7 @@ async fn run_server(s: &MSState) {
             axum::routing::post({
                 async move |Path(video_id): Path<String>,
                             Json(result): Json<Option<BrainzMetadata>>| {
-                    MSState::push_override(&video_id, |v| {
+                    MsState::push_override(&video_id, |v| {
                         if !v.is_downloaded() {
                             return false;
                         }
@@ -151,9 +168,10 @@ async fn run_server(s: &MSState) {
             axum::routing::post({
                 let s = s.clone();
                 async move |Path(video_id): Path<String>| {
-                    MSState::push_override(&video_id, |v| {
+                    MsState::push_override(&video_id, |v| {
+                        dbdata::DB.delete_yt_data(&video_id);
                         if let Some(file) = find_file(&s, &video_id) {
-                            if let Err(err) = musicfiles::delete_file(&s, &file) {
+                            if let Err(err) = musicfiles::delete_file(&s.config.paths, &file) {
                                 let err = err.to_string();
                                 error!("Error deleting file: {:?}", err);
                                 v.last_error = Some(err);
@@ -194,7 +212,7 @@ async fn run_server(s: &MSState) {
         .route("/ws", axum::routing::get(ws_handler))
         .fallback_service(ServeDir::new("web"));
 
-    let endpoint = format!("0.0.0.0:{}", s.config.port);
+    let endpoint = format!("0.0.0.0:{}", s.config.web.port);
     let listener = tokio::net::TcpListener::bind(endpoint).await.unwrap();
     info!(
         "Listening on: http://{}",
@@ -218,9 +236,9 @@ fn norm_string(s: Option<&str>) -> Option<String> {
     })
 }
 
-async fn playlist_sync_loop(s: &MSState) {
+async fn playlist_sync_loop(s: &MsState) {
     trigger_loop(
-        s.config.playlist_sync_rate,
+        s.config.scrape.playlist_sync_rate,
         TRIGGER_PLAYLIST_SYNC.clone(),
         async || {
             sync_all(&s).await;
@@ -230,9 +248,9 @@ async fn playlist_sync_loop(s: &MSState) {
     .await
 }
 
-async fn music_tag_loop(s: &MSState) {
+async fn music_tag_loop(s: &MsState) {
     trigger_loop(
-        s.config.cleanup_tag_rate,
+        s.config.scrape.cleanup_tag_rate,
         TRIGGER_MUSIC_TAG.clone(),
         async || {
             let all_ids = dbdata::DB.get_all_unprocessed_ids();
@@ -321,10 +339,10 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
     })
 }
 
-async fn sync_all(s: &MSState) {
+async fn sync_all(s: &MsState) {
     let all_ids = dbdata::DB.get_all_ids().into_iter().collect::<HashSet<_>>();
 
-    for playlist_id in s.config.playlists.iter() {
+    for playlist_id in s.config.scrape.playlists.iter() {
         info!("Syncing {}", playlist_id);
         match yt_api::get_playlist(&s.config, playlist_id).await {
             Ok(playlist) => {
@@ -333,7 +351,7 @@ async fn sync_all(s: &MSState) {
                         continue;
                     }
 
-                    MSState::push_update(&mut VideoStatus {
+                    MsState::push_update(&mut VideoStatus {
                         video_id: item.video_id.to_owned(),
                         fetch_status: FetchStatus::NotFetched,
                         last_query: Some(BrainzMultiSearch {
@@ -345,7 +363,7 @@ async fn sync_all(s: &MSState) {
                         ..Default::default()
                     });
 
-                    MSState::trigger_tagger();
+                    MsState::trigger_tagger();
                 }
             }
             Err(e) => {
@@ -355,7 +373,7 @@ async fn sync_all(s: &MSState) {
     }
 }
 
-async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
+async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     let mut status = dbdata::DB
         .get_video(&video_id)
         .ok_or_else(|| anyhow!("Video not found"))?;
@@ -363,18 +381,20 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
     info!("checking vid {}", status.video_id);
 
     let dlp_file: YtDlpResponse = match status.fetch_status {
-        FetchStatus::NotFetched => match ytdlp::get(&s, &status.video_id).await {
-            Ok(dlp_file) => {
-                status.fetch_time = Utc::now().timestamp() as u64;
-                MSState::push_update_state(&mut status, FetchStatus::Fetched);
-                dlp_file
+        FetchStatus::NotFetched => {
+            match ytdlp::get(&s, &status.video_id).await {
+                Ok(dlp_file) => {
+                    status.fetch_time = Utc::now().timestamp() as u64;
+                    MsState::push_update_state(&mut status, FetchStatus::Fetched);
+                    dlp_file
+                }
+                Err(err) => {
+                    status.last_error = Some(err.to_string());
+                    MsState::push_update_state(&mut status, FetchStatus::FetchError);
+                    return Err(anyhow!("Fetch error: {}", err));
+                }
             }
-            Err(err) => {
-                status.last_error = Some(err.to_string());
-                MSState::push_update_state(&mut status, FetchStatus::FetchError);
-                return Err(anyhow!("Fetch error: {}", err));
-            }
-        },
+        }
         FetchStatus::FetchError => {
             info!("Video {} fetch error", status.video_id);
             return Ok(());
@@ -391,7 +411,7 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
             if let Some(dlp_file) = ytdlp::try_get_metadata(&status.video_id) {
                 dlp_file
             } else {
-                MSState::push_update_state(&mut status, FetchStatus::FetchError);
+                MsState::push_update_state(&mut status, FetchStatus::FetchError);
                 return Err(anyhow!("No metadata found"));
             }
         }
@@ -419,18 +439,18 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
         match brainz::analyze_brainz(&brainz_query).await {
             Ok(res) => {
                 status.last_result = Some(res.clone());
-                MSState::push_update(&mut status);
+                MsState::push_update(&mut status);
                 res
             }
             Err(err) => {
                 status.last_result = None;
                 status.last_error = Some(err.to_string());
-                MSState::push_update_state(&mut status, FetchStatus::BrainzError);
+                MsState::push_update_state(&mut status, FetchStatus::BrainzError);
                 return Err(err.into());
             }
         }
     };
-    MSState::push_update(&mut status);
+    MsState::push_update(&mut status);
 
     let file = find_file(&s, &status.video_id).ok_or_else(|| anyhow!("No file found"))?;
 
@@ -442,71 +462,111 @@ async fn sync_playlist_item(s: &MSState, video_id: &str) -> anyhow::Result<()> {
     // apply metadata to file
     musicfiles::apply_metadata_to_file(&file, &tags)?;
 
-    musicfiles::move_file_to_library(s, &file, &tags)?;
+    musicfiles::move_file_to_library(&s, &file, &tags)?;
 
     status.last_error = None;
-    MSState::push_update_state(&mut status, FetchStatus::Categorized);
+    MsState::push_update_state(&mut status, FetchStatus::Categorized);
 
     Ok(())
 }
 
-fn find_file(s: &MSState, video_id: &str) -> Option<PathBuf> {
+fn find_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
     ytdlp::find_local_file(&s, video_id).or_else(|| musicfiles::find_local_file(&s, video_id))
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct MSConfig {
-    pub playlists: Vec<String>,
+pub struct MsConfig {
+    pub paths: MsPaths,
+    pub youtube: MsYoutube,
+    pub web: MsWeb,
+    pub scrape: MsScrape,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MsPaths {
     pub music: PathBuf,
     pub temp: PathBuf,
-    pub yt_client_id: String,
-    pub yt_client_secret: String,
-    #[serde(default = "MSConfig::default_port")]
+    pub migrate: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MsYoutube {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MsWeb {
+    #[serde(default = "MsConfig::default_port")]
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MsScrape {
+    pub playlists: Vec<String>,
+
     /// Min wait between requests to youtube-dl
     #[serde(deserialize_with = "deserialize_duration")]
-    #[serde(default = "MSConfig::default_yt_dlp_rate")]
+    #[serde(default = "MsConfig::default_yt_dlp_rate")]
     pub yt_dlp_rate: Duration,
     #[serde(deserialize_with = "deserialize_duration")]
-    #[serde(default = "MSConfig::default_cleanup_tag_rate")]
+    #[serde(default = "MsConfig::default_cleanup_tag_rate")]
     pub cleanup_tag_rate: Duration,
     #[serde(deserialize_with = "deserialize_duration")]
-    #[serde(default = "MSConfig::default_playlist_sync_rate")]
+    #[serde(default = "MsConfig::default_playlist_sync_rate")]
     pub playlist_sync_rate: Duration,
 }
 
-impl MSConfig {
+impl MsConfig {
     fn read() -> Result<Self, anyhow::Error> {
         let config = std::fs::read_to_string("msync.toml")?;
-        Ok(toml::from_str::<MSConfig>(&config)?)
+        Ok(toml::from_str::<MsConfig>(&config)?)
     }
 
-    fn default_port() -> u16 {
+    const fn default_port() -> u16 {
         3001
     }
 
-    fn default_yt_dlp_rate() -> Duration {
+    const fn default_yt_dlp_rate() -> Duration {
         Duration::from_secs(10)
     }
 
-    fn default_cleanup_tag_rate() -> Duration {
+    const fn default_cleanup_tag_rate() -> Duration {
         Duration::from_secs(60 * 60)
     }
 
-    fn default_playlist_sync_rate() -> Duration {
+    const fn default_playlist_sync_rate() -> Duration {
         Duration::from_secs(60 * 5)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MSState {
-    pub config: MSConfig,
+impl MsPaths {
+    pub fn get_base_paths(&self) -> Vec<&std::path::Path> {
+        let mut paths = vec![self.music.as_path(), self.temp.as_path()];
+        if let Some(migrate) = &self.migrate {
+            paths.push(migrate.as_path());
+        }
+        paths
+    }
+
+    pub fn is_sub_file(&self, path: &std::path::Path) -> bool {
+        self.get_base_paths()
+            .iter()
+            .any(|p| path.starts_with(p) && path != *p)
+    }
 }
 
-impl MSState {
+#[derive(Debug, Clone)]
+pub struct MsState {
+    pub config: MsConfig,
+    pub file_cache: Arc<Mutex<std::collections::HashMap<String, PathBuf>>>,
+}
+
+impl MsState {
     pub fn new() -> Self {
-        MSState {
-            config: MSConfig::read().expect("Failed to read config"),
+        MsState {
+            config: MsConfig::read().expect("Failed to read config"),
+            file_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 

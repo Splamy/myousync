@@ -55,6 +55,7 @@ async fn fetch_recordings_url(query: &str) -> Result<BrainzMetadata, BrainzError
     let response = if let Some(cached_response) = dbdata::DB.try_get_brainz(&url) {
         cached_response
     } else {
+        debug!("Fetching brainz data from {}", url);
         LIMITER.wait_for_next_fetch().await;
 
         let response = loop {

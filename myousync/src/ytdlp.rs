@@ -8,7 +8,7 @@ use tokio::process::Command;
 use crate::{
     dbdata::{self},
     util::limiter::Limiter,
-    MSState,
+    MsState,
 };
 
 static LIMITER: Limiter = Limiter::new(std::time::Duration::from_secs(10));
@@ -25,18 +25,18 @@ pub enum YtDlpError {
     CommandError(String),
 }
 
-pub async fn get(s: &MSState, video_id: &str) -> Result<YtDlpResponse, YtDlpError> {
+pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpError> {
     if let Some(file) = try_get_metadata(video_id) {
         return Ok(file);
     }
 
     info!("Getting yt-dlp for: {}", video_id);
     LIMITER
-        .wait_for_next_fetch_of_time(s.config.yt_dlp_rate.into())
+        .wait_for_next_fetch_of_time(s.config.scrape.yt_dlp_rate.into())
         .await;
 
     let dlp_output = Command::new("yt-dlp")
-        .current_dir(s.config.temp.as_path())
+        .current_dir(s.config.paths.temp.as_path())
         .arg("--quiet")
         .arg("--dump-json")
         .arg("--no-simulate")
@@ -81,8 +81,8 @@ pub fn try_get_metadata(video_id: &str) -> Option<YtDlpResponse> {
     None
 }
 
-pub fn find_local_file(s: &MSState, video_id: &str) -> Option<PathBuf> {
-    let mut path = s.config.temp.clone();
+pub fn find_local_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
+    let mut path = s.config.paths.temp.clone();
     path.push(format!("{}.*", video_id));
     glob::glob(&path.to_str().unwrap())
         .unwrap()

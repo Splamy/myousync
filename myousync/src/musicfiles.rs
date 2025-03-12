@@ -1,6 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
-use crate::{brainz::BrainzMetadata, util, MSState};
+use crate::{brainz::BrainzMetadata, dbdata, MsPaths, MsState};
 use anyhow::Context;
 use id3::TagLike;
 use log::info;
@@ -11,7 +14,9 @@ use walkdir::WalkDir;
 pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Result<()> {
     let mut test_tag = multitag::Tag::read_from_path(path).context("When reading audiotags")?;
 
+    test_tag.remove_title();
     test_tag.set_title(&tags.brainz.title);
+    test_tag.remove_artist();
     test_tag.set_artist(&tags.brainz.artist.join("; "));
     let mut album = test_tag.get_album_info().unwrap_or(Album::default());
     album.title = Some(tags.brainz.album.clone().unwrap_or_default());
@@ -45,31 +50,55 @@ pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Resul
     Ok(())
 }
 
-pub fn find_local_file(s: &MSState, video_id: &str) -> Option<PathBuf> {
-    for entry in WalkDir::new(&s.config.music)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        if let Some(youtube_id) = multitag::Tag::read_from_path(entry.path())
-            .ok()
-            .and_then(|t| t.get_comment("youtube_id"))
-        {
-            if youtube_id == video_id {
-                info!(
-                    "Found already downloaded file by youtube_id: {}",
-                    entry.path().display()
-                );
-                return Some(entry.path().to_path_buf());
-            }
+pub fn find_local_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
+    let mut cache = s.file_cache.lock().unwrap();
+    if let Some(path) = cache.get(video_id) {
+        if check_file(path, video_id) {
+            return Some(path.clone());
         }
     }
+
+    if dbdata::DB.get_video_fetch_status(video_id) == Some(dbdata::FetchStatus::Disabled) {
+        return None;
+    }
+
+    cache.clear();
+    info!("Rebuilding file cache");
+    create_cache(&s.config.paths.music, &mut cache);
+    if let Some(migrate) = &s.config.paths.migrate {
+        info!("Rebuilding migrate cache");
+        create_cache(migrate, &mut cache);
+    }
+    info!("Cache rebuilt with {} entries", cache.len());
+
+    if let Some(path) = cache.get(video_id) {
+        return Some(path.clone());
+    }
+
     None
 }
 
-pub fn move_file_to_library(s: &MSState, path: &Path, tags: &MetadataTags) -> anyhow::Result<()> {
+fn create_cache(path: &Path, map: &mut HashMap<String, PathBuf>) {
+    map.extend(
+        WalkDir::new(path)
+            .into_iter()
+            .filter_map(|p| p.ok())
+            .filter(|p| p.file_type().is_file())
+            .map(|f| f.into_path())
+            .flat_map(|p| multitag::Tag::read_from_path(&p).ok().map(|t| (t, p)))
+            .flat_map(|(t, p)| t.get_comment("youtube_id").map(|y| (y, p))),
+    );
+}
+
+fn check_file(path: &Path, video_id: &str) -> bool {
+    multitag::Tag::read_from_path(path)
+        .ok()
+        .and_then(|t| t.get_comment("youtube_id"))
+        .map(|y| y == video_id)
+        .unwrap_or(false)
+}
+
+pub fn move_file_to_library(s: &MsState, path: &Path, tags: &MetadataTags) -> anyhow::Result<()> {
     let clean_title = sanitize_default(&tags.brainz.title);
     let clean_artist = sanitize_default(&tags.brainz.artist.join("; "));
     let clean_album = &tags
@@ -81,7 +110,7 @@ pub fn move_file_to_library(s: &MSState, path: &Path, tags: &MetadataTags) -> an
 
     let orig_extenstion = path.extension().and_then(|e| e.to_str()).unwrap_or("mp3");
 
-    let mut new_path = s.config.music.clone();
+    let mut new_path = s.config.paths.music.clone();
     new_path.push(clean_artist);
     new_path.push(clean_album);
 
@@ -90,24 +119,17 @@ pub fn move_file_to_library(s: &MSState, path: &Path, tags: &MetadataTags) -> an
 
     new_path.push(format!("{}.{}", &clean_title, &orig_extenstion));
 
-    match std::fs::rename(path, &new_path) {
-        Ok(_) => {
-            cleanup_directory(s, path);
-        }
-        Err(err_ren) => match std::fs::copy(path, &new_path) {
-            Ok(_) => {
-                delete_file(s, path)
-                    .map_err(|e| anyhow::anyhow!("Error delete after copy file: {}", e))?;
-            }
-            Err(_) => return Err(anyhow::anyhow!("Error moving file: {}", err_ren)),
-        },
-    }
+    move_file(&s.config.paths, path, &new_path)?;
+
+    let mut cache = s.file_cache.lock().unwrap();
+    cache.remove(&tags.youtube_id);
+    cache.insert(tags.youtube_id.clone(), new_path);
 
     Ok(())
 }
 
-pub fn delete_file(s: &MSState, path: &Path) -> anyhow::Result<()> {
-    if !path.starts_with(&s.config.music) && !path.starts_with(&s.config.temp) {
+pub fn delete_file(s: &MsPaths, path: &Path) -> anyhow::Result<()> {
+    if !s.is_sub_file(path) {
         // not in music or temp directory
         return Err(anyhow::anyhow!("Not in music or temp directory"));
     }
@@ -120,16 +142,29 @@ pub fn delete_file(s: &MSState, path: &Path) -> anyhow::Result<()> {
     }
 }
 
-fn cleanup_directory(s: &MSState, file: &Path) {
-    if !file.starts_with(&s.config.music) && !file.starts_with(&s.config.temp) {
-        // not in music or temp directory
+fn move_file(s: &MsPaths, path: &Path, new_path: &Path) -> anyhow::Result<()> {
+    match std::fs::rename(path, new_path) {
+        Ok(_) => {
+            cleanup_directory(s, path);
+            Ok(())
+        }
+        Err(err_ren) => match std::fs::copy(path, new_path) {
+            Ok(_) => delete_file(s, path)
+                .map_err(|e| anyhow::anyhow!("Error delete after copy file: {}", e)),
+            Err(_) => Err(anyhow::anyhow!("Error moving file: {}", err_ren)),
+        },
+    }
+}
+
+fn cleanup_directory(s: &MsPaths, file: &Path) {
+    if !s.is_sub_file(file) {
         return;
     }
 
     let mut parent = file.parent();
     while let Some(p) = parent {
         // don't delete top level music or temp directory
-        if s.config.music.starts_with(p) || s.config.temp.starts_with(p) {
+        if !s.is_sub_file(p) {
             break;
         }
         if let Ok(cnt) = p.read_dir().map(|r| r.count()) {
