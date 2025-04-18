@@ -1155,6 +1155,7 @@ dependencies = [
  "log",
  "multitag",
  "rand",
+ "regex",
  "reqwest",
  "rusqlite",
  "sanitise-file-name",

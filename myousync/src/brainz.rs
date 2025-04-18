@@ -1,14 +1,17 @@
 use std::mem;
+use std::sync::LazyLock;
 
 use crate::net::CLIENT;
 use crate::{dbdata, util::limiter::Limiter};
 use log::{debug, error, info};
+use regex::Regex;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 static LIMITER: Limiter = Limiter::new(std::time::Duration::from_millis(1500));
 const RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+static SPLIT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bft\.?|\bfeat\.?|;|&").unwrap());
 
 #[derive(Error, Debug)]
 pub enum BrainzError {
@@ -27,7 +30,7 @@ pub async fn fetch_recordings(search: &RecordingSearch) -> Result<BrainzMetadata
     if let Some(part) = search.title.to_query_part("recording") {
         parts.push(part);
     }
-    if let Some(part) = search.artist.to_query_part("artist") {
+    for part in search.artist.iter().flat_map(|a| a.to_query_part("artist")) {
         parts.push(part);
     }
     if let Some(part) = search.album.to_query_part("release") {
@@ -112,39 +115,53 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
 
     if dlp.album.is_some() || dlp.artist.is_some() {
         debug!("Searching by native music info");
+        let artist_vec: Vec<QTerm> = dlp
+            .artist
+            .iter()
+            .flat_map(|a| a.split(',').map(|a| QTerm::Exact(a.trim().into())))
+            .collect();
+
         search.push(RecordingSearch {
             title: QTerm::Exact(dlp.title.clone()),
-            artist: QTerm::exact_option(&dlp.artist),
+            artist: artist_vec.clone(),
             album: QTerm::exact_option(&dlp.album),
         });
         search.push(RecordingSearch {
             title: QTerm::Exact(dlp.title.clone()),
-            artist: QTerm::exact_option(&dlp.artist),
+            artist: artist_vec,
             album: QTerm::None,
         });
     }
 
     if dlp.title.contains(" - ") {
         let parts: Vec<&str> = dlp.title.split(" - ").collect();
+
+        fn split_artists(artist: &str) -> impl Iterator<Item = String> + use<'_> {
+            SPLIT_REGEX
+                .split(artist)
+                .map(|s| s.trim().to_string().replace(&['(', ')', '[' , ']' , '【', '】'], ""))
+        }
+
         search.push(RecordingSearch {
             title: QTerm::Exact(parts[1].to_string()),
-            artist: QTerm::Exact(parts[0].to_string()),
+            artist: split_artists(parts[0]).map(|p| QTerm::Exact(p)).collect(),
+            album: QTerm::None,
+        });
+
+        search.push(RecordingSearch {
+            title: QTerm::Exact(parts[0].to_string()),
+            artist: split_artists(parts[1]).map(|p| QTerm::Exact(p)).collect(),
             album: QTerm::None,
         });
     }
 
-    search.push(RecordingSearch {
-        title: QTerm::Exact(dlp.title.to_string()),
-        artist: QTerm::None,
-        album: QTerm::None,
-    });
-
     let mut brainz_res: Option<BrainzMetadata> = None;
 
-    if let Some(nc_match) = search.iter().find(|f| {
-        f.artist
-            .get_text()
-            .map_or(false, |a| a.to_uppercase().contains("NIGHTCORE"))
+    if let Some(nc_match) = search.iter().find(|rec_search| {
+        rec_search.artist.iter().any(|ff| {
+            ff.get_text()
+                .map_or(false, |a| a.to_uppercase().contains("NIGHTCORE"))
+        })
     }) {
         brainz_res = Some(BrainzMetadata {
             brainz_recording_id: None,
@@ -194,7 +211,7 @@ pub struct BrainzMetadata {
     pub album: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub enum QTerm {
     #[default]
     None,
@@ -235,7 +252,7 @@ impl QTerm {
 #[derive(Debug, Default)]
 pub struct RecordingSearch {
     pub title: QTerm,
-    pub artist: QTerm,
+    pub artist: Vec<QTerm>,
     pub album: QTerm,
 }
 
