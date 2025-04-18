@@ -36,15 +36,18 @@
 	const CAT_OK = [FetchStatus.CATEGORIZED];
 	const CAT_DISABLED = [FetchStatus.DISABLED];
 
-	let show_ok = $state(true);
-	let show_err = $state(true);
-	let show_fetching = $state(true);
-	let show_disabled = $state(true);
-	let show_filter = $state("");
-	let show_sort = $state(SortMode.Unsorted);
+	const _init_state = load_state_or_default();
+
+	let show_ok = $state(_init_state.show_ok);
+	let show_err = $state(_init_state.show_err);
+	let show_fetching = $state(_init_state.show_fetching);
+	let show_disabled = $state(_init_state.show_disabled);
+	let show_filter = $state(_init_state.show_filter);
+	let show_sort = $state(_init_state.show_sort);
 
 	let videos = new SvelteMap<string, VideoData>();
 	let sorted_videos = $derived.by(() => {
+		save_state();
 		let rlist: VideoData[] = [];
 		for (let v of videos.values()) {
 			if (CAT_FETCHING.includes(v.fetch_status) && !show_fetching)
@@ -113,6 +116,32 @@
 
 	let jwt = $derived(AUTH.jwt);
 	let hasInit = false;
+
+	function load_state_or_default() {
+		let state = localStorage.getItem("ui_state");
+		let parsed = state ? JSON.parse(state) : null;
+		return {
+			show_ok: parsed?.show_ok ?? true,
+			show_err: parsed?.show_err ?? true,
+			show_fetching: parsed?.show_fetching ?? true,
+			show_disabled: parsed?.show_disabled ?? true,
+			show_filter: parsed?.show_filter ?? "",
+			show_sort: parsed?.show_sort ?? SortMode.Unsorted,
+		};
+	}
+
+	function save_state() {
+		console.log("saving state");
+		let state = {
+			show_ok,
+			show_err,
+			show_fetching,
+			show_disabled,
+			show_filter,
+			show_sort,
+		};
+		localStorage.setItem("ui_state", JSON.stringify(state));
+	}
 
 	$effect(() => {
 		if ($jwt && !hasInit) {
