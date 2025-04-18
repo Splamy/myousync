@@ -42,7 +42,7 @@
 	let show_err = $state(_init_state.show_err);
 	let show_fetching = $state(_init_state.show_fetching);
 	let show_disabled = $state(_init_state.show_disabled);
-	let show_filter = $state(_init_state.show_filter);
+	let show_filter = $state("");
 	let show_sort = $state(_init_state.show_sort);
 
 	let videos = new SvelteMap<string, VideoData>();
