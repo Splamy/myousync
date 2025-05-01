@@ -116,7 +116,7 @@ impl DbState {
 
     pub fn delete_yt_data(&self, video_id: &str) {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM ytdata WHERE video_id = ?1", &[video_id])
+        conn.execute("DELETE FROM ytdata WHERE video_id = ?1", [video_id])
             .unwrap();
     }
 
@@ -134,7 +134,7 @@ impl DbState {
     fn try_get_ytdata(&self, video_id: &str, col: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
         let query = format!("SELECT {col} FROM ytdata WHERE video_id = ?1");
-        conn.query_row(&query, &[video_id], |row| row.get::<_, Option<String>>(0))
+        conn.query_row(&query, [video_id], |row| row.get::<_, Option<String>>(0))
             .get_single_row()?
     }
 
@@ -145,7 +145,7 @@ impl DbState {
         let mut playlist = conn
             .query_row(
                 "SELECT playlist_id, etag, total_results, fetch_time FROM playlists WHERE playlist_id = ?1",
-                &[playlist_id],
+                [playlist_id],
                 |row| {
                     Ok(Playlist {
                         playlist_id: row.get(0)?,
@@ -163,7 +163,7 @@ impl DbState {
             .unwrap();
 
         let rows = stmt
-            .query_map(&[playlist_id], |row| {
+            .query_map([playlist_id], |row| {
                 Ok(PlaylistItem {
                     video_id: row.get(0)?,
                     title: row.get(1)?,
@@ -250,14 +250,14 @@ impl DbState {
     pub fn get_track_query_override(&self, video_id: &str) -> Option<String> {
         self.single(
             "SELECT override_query FROM status WHERE video_id = ?1",
-            &[video_id],
+            [video_id],
         )
     }
 
     pub fn get_track_result_override(&self, video_id: &str) -> Option<String> {
         self.single(
             "SELECT override_result FROM status WHERE video_id = ?1",
-            &[video_id],
+            [video_id],
         )
     }
 
@@ -266,13 +266,13 @@ impl DbState {
         video_id: &str,
         modify: F,
     ) -> Option<VideoStatus> {
-        if let Some(mut video) = Self::get_video(&self, video_id) {
+        if let Some(mut video) = Self::get_video(self, video_id) {
             let save = modify(&mut video);
             if !save {
                 return None;
             }
             video.update_now();
-            Self::set_full_track_status(&self, &video);
+            Self::set_full_track_status(self, &video);
             Some(video)
         } else {
             None
@@ -317,7 +317,7 @@ impl DbState {
     fn get_video_internal(conn: &Connection, video_id: &str) -> Option<VideoStatus> {
         conn.query_row_and_then(
             "SELECT * FROM status WHERE video_id = ?1",
-            &[video_id],
+            [video_id],
             Self::map_video_status,
         )
         .get_single_row()
@@ -393,7 +393,7 @@ impl DbState {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT data FROM brainz WHERE query = ?1",
-            &[query],
+            [query],
             |row| row.get::<_, Option<String>>(0),
         )
         .get_single_row()?
@@ -413,12 +413,12 @@ impl DbState {
     pub fn get_user(&self, username: &str) -> Option<UserData> {
         self.single(
             "SELECT username, password FROM users WHERE username = ?1",
-            &[username],
+            [username],
         )
     }
 
     pub fn get_key(&self, key: &str) -> Option<String> {
-        self.single("SELECT value FROM kvp WHERE key = ?1", &[key])
+        self.single("SELECT value FROM kvp WHERE key = ?1", [key])
     }
 
     pub fn set_key(&self, key: &str, value: &str) {

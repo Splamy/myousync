@@ -46,7 +46,7 @@ pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Resul
         }
     }
 
-    test_tag.write_to_path(&path)?;
+    test_tag.write_to_path(path)?;
     Ok(())
 }
 
@@ -171,7 +171,7 @@ fn cleanup_directory(s: &MsPaths, file: &Path) {
             if cnt > 0 {
                 break;
             }
-            if !std::fs::remove_dir(p).is_ok() {
+            if std::fs::remove_dir(p).is_err() {
                 break;
             }
             parent = p.parent();

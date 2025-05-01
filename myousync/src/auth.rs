@@ -111,7 +111,7 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
         }
     };
     let mut header = auth_header.split_whitespace();
-    let (bearer, token) = (header.next(), header.next());
+    let (_bearer, token) = (header.next(), header.next());
     let token_data = match decode_jwt(token.unwrap()) {
         Ok(data) => data,
         Err(_) => {
@@ -122,7 +122,7 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
         }
     };
     // Fetch the user details from the database
-    let current_user = match dbdata::DB.get_user(&token_data.claims.user) {
+    let _current_user = match dbdata::DB.get_user(&token_data.claims.user) {
         Some(user) => user,
         None => {
             return Err(AuthError {

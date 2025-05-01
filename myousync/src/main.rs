@@ -199,12 +199,12 @@ async fn run_server(s: &MsState) {
                             error!("Error serving file: {:?}", e);
                             (
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("Error serving file"),
+                                "Error serving file".to_string(),
                             )
                         });
                     }
 
-                    return Err((StatusCode::NOT_FOUND, format!("File not found")));
+                    Err((StatusCode::NOT_FOUND, "File not found".to_string()))
                 }
             })
             .layer(cors_layer.clone()), //.layer(middleware::from_fn(auth::auth)),
@@ -241,7 +241,7 @@ async fn playlist_sync_loop(s: &MsState) {
         s.config.scrape.playlist_sync_rate,
         TRIGGER_PLAYLIST_SYNC.clone(),
         async || {
-            sync_all(&s).await;
+            sync_all(s).await;
         },
         "Playlist sync",
     )
@@ -255,7 +255,7 @@ async fn music_tag_loop(s: &MsState) {
         async || {
             let all_ids = dbdata::DB.get_all_unprocessed_ids();
             for video_id in all_ids {
-                if let Err(err) = sync_playlist_item(&s, &video_id).await {
+                if let Err(err) = sync_playlist_item(s, &video_id).await {
                     error!("Error processing song: {:?}", err);
                 }
             }
@@ -323,11 +323,10 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
             }
         }
 
-        while let Some(msg) = rx
+        while let Ok(msg) = rx
             .recv()
             .await
             .inspect_err(|e| warn!("Error receiving message: {:?}", e))
-            .ok()
         {
             if let Err(err) = socket.send(Message::Text(msg.into())).await {
                 debug!("Error sending message: {:?}", err);
@@ -375,14 +374,14 @@ async fn sync_all(s: &MsState) {
 
 async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     let mut status = dbdata::DB
-        .get_video(&video_id)
+        .get_video(video_id)
         .ok_or_else(|| anyhow!("Video not found"))?;
 
     info!("checking vid {}", status.video_id);
 
     let dlp_file: YtDlpResponse = match status.fetch_status {
         FetchStatus::NotFetched => {
-            match ytdlp::get(&s, &status.video_id).await {
+            match ytdlp::get(s, &status.video_id).await {
                 Ok(dlp_file) => {
                     status.fetch_time = Utc::now().timestamp() as u64;
                     MsState::push_update_state(&mut status, FetchStatus::Fetched);
@@ -452,7 +451,7 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     };
     MsState::push_update(&mut status);
 
-    let file = find_file(&s, &status.video_id).ok_or_else(|| anyhow!("No file found"))?;
+    let file = find_file(s, &status.video_id).ok_or_else(|| anyhow!("No file found"))?;
 
     let tags = MetadataTags {
         youtube_id: status.video_id.clone(),
@@ -462,7 +461,7 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     // apply metadata to file
     musicfiles::apply_metadata_to_file(&file, &tags)?;
 
-    musicfiles::move_file_to_library(&s, &file, &tags)?;
+    musicfiles::move_file_to_library(s, &file, &tags)?;
 
     status.last_error = None;
     MsState::push_update_state(&mut status, FetchStatus::Categorized);
@@ -471,7 +470,7 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
 }
 
 fn find_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
-    ytdlp::find_local_file(&s, video_id).or_else(|| musicfiles::find_local_file(&s, video_id))
+    ytdlp::find_local_file(s, video_id).or_else(|| musicfiles::find_local_file(s, video_id))
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -32,7 +32,7 @@ pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
 
     info!("Getting yt-dlp for: {}", video_id);
     LIMITER
-        .wait_for_next_fetch_of_time(s.config.scrape.yt_dlp_rate.into())
+        .wait_for_next_fetch_of_time(s.config.scrape.yt_dlp_rate)
         .await;
 
     let dlp_output = Command::new("yt-dlp")
@@ -41,10 +41,10 @@ pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
         .arg("--dump-json")
         .arg("--no-simulate")
         .arg("--extract-audio")
-        .args(&["--format", "ba"])
-        .args(&["--sponsorblock-remove", "music_offtopic"])
-        .args(&["--use-extractors", "youtube"])
-        .args(&["--output", "%(id)s.%(ext)s"])
+        .args(["--format", "ba"])
+        .args(["--sponsorblock-remove", "music_offtopic"])
+        .args(["--use-extractors", "youtube"])
+        .args(["--output", "%(id)s.%(ext)s"])
         .arg(format!("https://www.youtube.com/watch?v={video_id}"))
         .output()
         .await?;
@@ -84,7 +84,7 @@ pub fn try_get_metadata(video_id: &str) -> Option<YtDlpResponse> {
 pub fn find_local_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
     let mut path = s.config.paths.temp.clone();
     path.push(format!("{}.*", video_id));
-    glob::glob(&path.to_str().unwrap())
+    glob::glob(path.to_str().unwrap())
         .unwrap()
         .next()
         .and_then(|r| r.ok())
@@ -92,10 +92,13 @@ pub fn find_local_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
 
 #[derive(Debug, Deserialize)]
 pub struct YtDlpResponse {
+    #[expect(dead_code)]
     pub id: String,
 
     pub title: String,
+    #[expect(dead_code)]
     pub channel: String,
+    #[expect(dead_code)]
     pub duration: u32,
 
     pub album: Option<String>,

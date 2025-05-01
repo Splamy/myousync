@@ -108,7 +108,7 @@ async fn fetch_recordings_url(query: &str) -> Result<BrainzMetadata, BrainzError
 
 pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, BrainzError> {
     if let Some(trackid) = &dlp.trackid {
-        return fetch_recordings_by_id(&trackid).await;
+        return fetch_recordings_by_id(trackid).await;
     }
 
     let mut search: Vec<RecordingSearch> = vec![];
@@ -139,18 +139,18 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
         fn split_artists(artist: &str) -> impl Iterator<Item = String> + use<'_> {
             SPLIT_REGEX
                 .split(artist)
-                .map(|s| s.trim().to_string().replace(&['(', ')', '[' , ']' , '【', '】'], ""))
+                .map(|s| s.trim().to_string().replace(['(', ')', '[' , ']' , '【', '】'], ""))
         }
 
         search.push(RecordingSearch {
             title: QTerm::Exact(parts[1].to_string()),
-            artist: split_artists(parts[0]).map(|p| QTerm::Exact(p)).collect(),
+            artist: split_artists(parts[0]).map(QTerm::Exact).collect(),
             album: QTerm::None,
         });
 
         search.push(RecordingSearch {
             title: QTerm::Exact(parts[0].to_string()),
-            artist: split_artists(parts[1]).map(|p| QTerm::Exact(p)).collect(),
+            artist: split_artists(parts[1]).map(QTerm::Exact).collect(),
             album: QTerm::None,
         });
     }
@@ -160,7 +160,7 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
     if let Some(nc_match) = search.iter().find(|rec_search| {
         rec_search.artist.iter().any(|ff| {
             ff.get_text()
-                .map_or(false, |a| a.to_uppercase().contains("NIGHTCORE"))
+                .is_some_and(|a| a.to_uppercase().contains("NIGHTCORE"))
         })
     }) {
         brainz_res = Some(BrainzMetadata {
@@ -226,6 +226,7 @@ impl QTerm {
             .unwrap_or(QTerm::None)
     }
 
+    #[expect(dead_code)]
     pub fn fuzzy_option<T: ToString>(text: &Option<T>) -> Self {
         text.as_ref()
             .map(|s| QTerm::Fuzzy(s.to_string()))
@@ -259,7 +260,9 @@ pub struct RecordingSearch {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 struct RecordingResponse {
+    #[expect(dead_code)]
     pub count: i32,
+    #[expect(dead_code)]
     pub offset: i32,
     pub recordings: Vec<Recording>,
 }
@@ -269,8 +272,10 @@ struct RecordingResponse {
 struct Recording {
     pub id: String,
     pub title: String,
+    #[expect(dead_code)]
     pub length: Option<i32>,
     pub artist_credit: Vec<ArtistCredit>,
+    #[expect(dead_code)]
     pub first_release_date: Option<String>,
     #[serde(default)]
     pub releases: Vec<Release>,
@@ -285,8 +290,10 @@ struct ArtistCredit {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 struct Release {
+    #[expect(dead_code)]
     pub id: String,
     pub title: String,
+    #[expect(dead_code)]
     pub date: Option<String>,
     //media: Vec<Media>,
 }

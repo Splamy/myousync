@@ -71,7 +71,7 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
 
                 return Ok(new_data);
             }
-            YtTokenResponse::Error(error) => {
+            YtTokenResponse::Error(_error) => {
                 return Err(YTError::Unknown);
             }
         }
@@ -159,7 +159,7 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
         }
     }
 
-    return Err(YTError::AuthTimeExceeded);
+    Err(YTError::AuthTimeExceeded)
 }
 
 pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playlist, YTError> {
@@ -303,6 +303,7 @@ pub struct YtResourceId {
 #[serde(rename_all(deserialize = "camelCase"))]
 pub struct PageInfo {
     pub total_results: u32,
+    #[expect(dead_code)]
     pub results_per_page: u32,
 }
 
@@ -320,13 +321,16 @@ struct YtTokenResponseSuccess {
     pub access_token: String,
     pub expires_in: i64,
     pub refresh_token: Option<String>,
+    #[expect(dead_code)]
     pub scope: String,
+    #[expect(dead_code)]
     pub token_type: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct YtTokenResponseError {
     pub error: String,
+    #[expect(dead_code)]
     pub error_description: String,
 }
 
