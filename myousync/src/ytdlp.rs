@@ -41,6 +41,7 @@ pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
         .arg("--dump-json")
         .arg("--no-simulate")
         .arg("--extract-audio")
+        .arg("--embed-thumbnail")
         .args(["--format", "ba"])
         .args(["--sponsorblock-remove", "music_offtopic"])
         .args(["--use-extractors", "youtube"])
