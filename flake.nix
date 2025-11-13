@@ -7,15 +7,14 @@
     self,
     nixpkgs,
   }: let
-    supportedSystems = ["x86_64-linux"];
-    forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-    pkgsFor = nixpkgs.legacyPackages;
+    systems = ["x86_64-linux"];
+    forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs {inherit system;}));
   in {
     nixosModules.myousync = import ./myousync.nix;
 
-    packages = forAllSystems (system: {
-      myousync = pkgsFor.${system}.callPackage ./. {};
-      default = self.packages.${system}.myousync;
+    packages = forAllSystems (pkgs: {
+      myousync = pkgs.callPackage ./. {};
+      default = self.packages.${pkgs.system}.myousync;
     });
   };
 }
