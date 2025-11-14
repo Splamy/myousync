@@ -2,6 +2,7 @@
   description = "Foo Bar";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
   };
   outputs = {
     self,
@@ -10,7 +11,8 @@
     systems = ["x86_64-linux"];
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs {inherit system;}));
   in {
-    nixosModules.myousync = import ./myousync.nix;
+    nixosModules.default = import ./nix/myousync.nix self;
+    # overlays.default = import ./nix/overlay.nix;
 
     packages = forAllSystems (pkgs: {
       myousync = pkgs.callPackage ./. {};

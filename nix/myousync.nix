@@ -1,10 +1,13 @@
-{
+self: {
   config,
   lib,
   pkgs,
   ...
 }:
 with lib; let
+  inherit (pkgs.stdenv.hostPlatform) system;
+
+  bin-default = self.inputs.myousync.packages.${system}.default;
   cfg = config.services.myousync;
 in {
   options.services.myousync = {
@@ -12,7 +15,7 @@ in {
 
     package = mkOption {
       type = types.package;
-      default = pkgs.myousync;
+      default = bin-default;
       defaultText = literalExpression "pkgs.myousync";
       description = "myousync package to use.";
     };
