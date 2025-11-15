@@ -7,6 +7,9 @@ in
       version = manifest.version;
       cargoLock.lockFile = ./Cargo.lock;
       src = pkgs.lib.cleanSource ./.;
+      meta = {
+        mainProgram = "myousync";
+      };
 
       buildInputs = [
         openssl

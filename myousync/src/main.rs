@@ -29,6 +29,9 @@ use reqwest::Method;
 use serde::Deserialize;
 use std::{
     collections::HashSet,
+    env,
+    ffi::OsStr,
+    ffi::OsString,
     future::Future,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
@@ -52,7 +55,13 @@ static TRIGGER_PLAYLIST_SYNC: LazyLock<Sender<()>> =
 async fn main() {
     colog::init();
 
-    let s = MsState::new();
+    let config_path = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .or(env::var("MYOUSYNC_CONFIG_FILE").ok())
+            .unwrap_or("myousync.toml".into()),
+    );
+    let s = MsState::new(&config_path);
     tokio::select! {
         _ = run_server(&s) => {},
         _ = playlist_sync_loop(&s) => {},
@@ -380,20 +389,18 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     info!("checking vid {}", status.video_id);
 
     let dlp_file: YtDlpResponse = match status.fetch_status {
-        FetchStatus::NotFetched => {
-            match ytdlp::get(s, &status.video_id).await {
-                Ok(dlp_file) => {
-                    status.fetch_time = Utc::now().timestamp() as u64;
-                    MsState::push_update_state(&mut status, FetchStatus::Fetched);
-                    dlp_file
-                }
-                Err(err) => {
-                    status.last_error = Some(err.to_string());
-                    MsState::push_update_state(&mut status, FetchStatus::FetchError);
-                    return Err(anyhow!("Fetch error: {}", err));
-                }
+        FetchStatus::NotFetched => match ytdlp::get(s, &status.video_id).await {
+            Ok(dlp_file) => {
+                status.fetch_time = Utc::now().timestamp() as u64;
+                MsState::push_update_state(&mut status, FetchStatus::Fetched);
+                dlp_file
             }
-        }
+            Err(err) => {
+                status.last_error = Some(err.to_string());
+                MsState::push_update_state(&mut status, FetchStatus::FetchError);
+                return Err(anyhow!("Fetch error: {}", err));
+            }
+        },
         FetchStatus::FetchError => {
             info!("Video {} fetch error", status.video_id);
             return Ok(());
@@ -490,7 +497,9 @@ pub struct MsPaths {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MsYoutube {
+    #[serde(default = "MsConfig::get_youtube_client_id_from_env")]
     pub client_id: String,
+    #[serde(default = "MsConfig::get_youtube_client_secret_from_env")]
     pub client_secret: String,
 }
 
@@ -498,6 +507,8 @@ pub struct MsYoutube {
 pub struct MsWeb {
     #[serde(default = "MsConfig::default_port")]
     pub port: u16,
+    #[serde(default = "MsConfig::default_web_path")]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -514,16 +525,22 @@ pub struct MsScrape {
     #[serde(deserialize_with = "deserialize_duration")]
     #[serde(default = "MsConfig::default_playlist_sync_rate")]
     pub playlist_sync_rate: Duration,
+    #[serde(default = "MsConfig::default_yt_dlp")]
+    pub yt_dlp: OsString,
 }
 
 impl MsConfig {
-    fn read() -> Result<Self, anyhow::Error> {
-        let config = std::fs::read_to_string("msync.toml")?;
+    fn read(config_path: &std::path::Path) -> Result<Self, anyhow::Error> {
+        let config = std::fs::read_to_string(config_path)?;
         Ok(toml::from_str::<MsConfig>(&config)?)
     }
 
     const fn default_port() -> u16 {
         3001
+    }
+
+    fn default_web_path() -> String {
+        "web".to_string()
     }
 
     const fn default_yt_dlp_rate() -> Duration {
@@ -536,6 +553,18 @@ impl MsConfig {
 
     const fn default_playlist_sync_rate() -> Duration {
         Duration::from_secs(60 * 5)
+    }
+
+    fn get_youtube_client_id_from_env() -> String {
+        env::var("YOUTUBE_CLIENT_ID").expect("youtube client id is not set")
+    }
+
+    fn get_youtube_client_secret_from_env() -> String {
+        env::var("YOUTUBE_CLIENT_SECRET").expect("youtube client secret is not set")
+    }
+
+    fn default_yt_dlp() -> OsString {
+        "yt-dlp".into()
     }
 }
 
@@ -562,9 +591,9 @@ pub struct MsState {
 }
 
 impl MsState {
-    pub fn new() -> Self {
+    pub fn new(config_path: &std::path::Path) -> Self {
         MsState {
-            config: MsConfig::read().expect("Failed to read config"),
+            config: MsConfig::read(config_path).expect("Failed to read config"),
             file_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }

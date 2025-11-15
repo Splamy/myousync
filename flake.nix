@@ -1,5 +1,5 @@
 {
-  description = "Foo Bar";
+  description = "Myousync";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
   };
@@ -15,7 +15,11 @@
 
     packages = forAllSystems (pkgs: {
       myousync = pkgs.callPackage ./. {};
-      default = self.packages.${pkgs.system}.myousync;
+      default = self.packages.${pkgs.stdenv.hostPlatform}.myousync;
+    });
+
+    devShells = forAllSystems (pkgs: {
+      default = pkgs.callPackage ./shell.nix {};
     });
   };
 }

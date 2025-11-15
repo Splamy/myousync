@@ -35,7 +35,7 @@ pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
         .wait_for_next_fetch_of_time(s.config.scrape.yt_dlp_rate)
         .await;
 
-    let dlp_output = Command::new("yt-dlp")
+    let dlp_output = Command::new(&s.config.scrape.yt_dlp)
         .current_dir(s.config.paths.temp.as_path())
         .arg("--quiet")
         .arg("--dump-json")
