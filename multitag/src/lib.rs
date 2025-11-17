@@ -8,10 +8,13 @@ use id3::TagLike;
 use metaflac::Tag as FlacInternalTag;
 use mp4ameta::Data as Mp4Data;
 use mp4ameta::Fourcc as Mp4Fourcc;
+use mp4ameta::FreeformIdent;
 use mp4ameta::Ident as Mp4Ident;
 use mp4ameta::Tag as Mp4InternalTag;
 use oggmeta::Tag as OggInternalTag;
+use opusmeta::LowercaseString;
 use opusmeta::Tag as OpusInternalTag;
+use std::collections::hash_map::Entry;
 use std::convert::Into;
 use std::fs::{File, OpenOptions};
 use std::io::Cursor;
@@ -751,7 +754,6 @@ impl Tag {
         }
     }
 
-
     #[must_use]
     /// Gets all comments with the given key.
     pub fn get_comment(&self, key: &str) -> Option<String> {
@@ -766,14 +768,19 @@ impl Tag {
                 .map(|c| c.map(String::from).next())
                 .unwrap_or_default(),
             Self::Mp4Tag { inner } => inner
-                .data_of(&FreeformIdent::new("com.apple.iTunes", key))
+                .data_of(&FreeformIdent::new_borrowed("com.apple.iTunes", key))
                 .filter_map(|data| match data {
                     Mp4Data::Utf8(s) => Some(s.clone()),
                     Mp4Data::Utf16(s) => Some(s.clone()),
                     _ => None,
                 })
                 .next(),
-            Self::OpusTag { inner } => inner.get(key.into()).and_then(|f| f.first().cloned()),
+            Self::OpusTag { inner } => inner
+                .get(&LowercaseString::new(key))
+                .and_then(|f| f.first().cloned()),
+            Self::OggTag { inner } => {
+                unimplemented!()
+            }
         }
     }
 
@@ -788,13 +795,16 @@ impl Tag {
             }
             Self::Mp4Tag { inner } => {
                 inner.set_data(
-                    FreeformIdent::new("com.apple.iTunes", key),
+                    FreeformIdent::new_borrowed("com.apple.iTunes", key),
                     Mp4Data::Utf8(value),
                 );
             }
             Self::OpusTag { inner } => {
-                inner.remove_entries(key.into());
+                inner.remove_entries(&LowercaseString::new(key));
                 inner.add_many(key.into(), vec![value]);
+            }
+            Self::OggTag { inner } => {
+                unimplemented!()
             }
         }
     }
@@ -824,12 +834,15 @@ impl Tag {
             }
             Self::Mp4Tag { inner } => {
                 inner.add_data(
-                    FreeformIdent::new("com.apple.iTunes", key),
+                    FreeformIdent::new_borrowed("com.apple.iTunes", key),
                     Mp4Data::Utf8(value),
                 );
             }
             Self::OpusTag { inner } => {
                 inner.add_one(key.into(), value);
+            }
+            Self::OggTag { inner } => {
+                unimplemented!()
             }
         }
     }
@@ -850,19 +863,22 @@ impl Tag {
             }
             Self::Mp4Tag { inner } => {
                 if let Some(value) = value {
-                    inner.retain_data_of(&FreeformIdent::new("com.apple.iTunes", key), |entry| {
-                        if let Mp4Data::Utf8(s) = entry {
-                            s != value
-                        } else {
-                            true
-                        }
-                    });
+                    inner.retain_data_of(
+                        &FreeformIdent::new_borrowed("com.apple.iTunes", key),
+                        |entry| {
+                            if let Mp4Data::Utf8(s) = entry {
+                                s != value
+                            } else {
+                                true
+                            }
+                        },
+                    );
                 } else {
-                    inner.remove_data_of(&FreeformIdent::new("com.apple.iTunes", key));
+                    inner.remove_data_of(&FreeformIdent::new_borrowed("com.apple.iTunes", key));
                 }
             }
             Self::OpusTag { inner } => {
-                if let Some(mut list) = inner.remove_entries(key.into()) {
+                if let Some(mut list) = inner.remove_entries(&LowercaseString::new(key)) {
                     if let Some(value) = value {
                         list.retain(|x| x != value);
                         if !list.is_empty() {
@@ -871,10 +887,12 @@ impl Tag {
                     }
                 }
             }
+            Self::OggTag { inner } => {
+                unimplemented!()
+            }
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

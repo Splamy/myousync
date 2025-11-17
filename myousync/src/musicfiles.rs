@@ -43,6 +43,9 @@ pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Resul
             multitag::Tag::VorbisFlacTag { .. } => {
                 tag.set_comment("MUSICBRAINZ_TRACKID", brainz_id.into());
             }
+            multitag::Tag::OggTag { .. } => {
+                unimplemented!()
+            }
         }
     }
 
