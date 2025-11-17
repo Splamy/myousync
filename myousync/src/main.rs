@@ -9,15 +9,15 @@ mod ytdlp;
 
 use anyhow::anyhow;
 use axum::{
+    Json, Router,
     body::Body,
     extract::{
-        ws::{Message, WebSocketUpgrade},
         Path,
+        ws::{Message, WebSocketUpgrade},
     },
     http::{Request, StatusCode},
     middleware,
     response::IntoResponse,
-    Json, Router,
 };
 use brainz::{BrainzMetadata, BrainzMultiSearch};
 use chrono::Utc;
@@ -30,8 +30,6 @@ use serde::Deserialize;
 use std::{
     collections::HashSet,
     env,
-    ffi::OsStr,
-    ffi::OsString,
     future::Future,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
@@ -62,6 +60,19 @@ async fn main() {
             .unwrap_or("myousync.toml".into()),
     );
     let s = MsState::new(&config_path);
+
+    if !s.config.paths.music.exists() {
+        std::fs::create_dir(&s.config.paths.music).expect("Failed to find or create music folder");
+    }
+    if !s.config.paths.temp.exists() {
+        std::fs::create_dir(&s.config.paths.temp).expect("Failed to find or create temp folder");
+    }
+    if let Some(migrate_path) = &s.config.paths.migrate
+        && !migrate_path.exists()
+    {
+        std::fs::create_dir(migrate_path).expect("Failed to find or create migrate folder");
+    }
+
     tokio::select! {
         _ = run_server(&s) => {},
         _ = playlist_sync_loop(&s) => {},
@@ -526,7 +537,7 @@ pub struct MsScrape {
     #[serde(default = "MsConfig::default_playlist_sync_rate")]
     pub playlist_sync_rate: Duration,
     #[serde(default = "MsConfig::default_yt_dlp")]
-    pub yt_dlp: OsString,
+    pub yt_dlp: String,
 }
 
 impl MsConfig {
@@ -563,7 +574,7 @@ impl MsConfig {
         env::var("YOUTUBE_CLIENT_SECRET").expect("youtube client secret is not set")
     }
 
-    fn default_yt_dlp() -> OsString {
+    fn default_yt_dlp() -> String {
         "yt-dlp".into()
     }
 }
@@ -593,7 +604,10 @@ pub struct MsState {
 impl MsState {
     pub fn new(config_path: &std::path::Path) -> Self {
         MsState {
-            config: MsConfig::read(config_path).expect("Failed to read config"),
+            config: MsConfig::read(config_path).expect(&format!(
+                "Failed to read config at {}",
+                config_path.to_string_lossy()
+            )),
             file_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }

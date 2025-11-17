@@ -21,7 +21,6 @@ with lib; let
       };
       paths = {
         music = "${cfg.dataDir}/music";
-        migrate = "${cfg.dataDir}/migrate";
         temp = "${cfg.dataDir}/temp";
       };
       youtube = {};
@@ -127,6 +126,9 @@ in {
         Restart = "on-failure";
         TimeoutSec = 15;
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
+        Environment = {
+          RUST_BACKTRACE = 1;
+        };
       };
     };
 

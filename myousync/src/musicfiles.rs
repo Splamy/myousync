@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{brainz::BrainzMetadata, dbdata, MsPaths, MsState};
+use crate::{MsPaths, MsState, brainz::BrainzMetadata, dbdata};
 use anyhow::Context;
 use id3::TagLike;
 use log::info;
