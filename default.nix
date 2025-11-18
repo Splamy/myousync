@@ -2,7 +2,7 @@
   manifest = (pkgs.lib.importTOML ./myousync/Cargo.toml).package;
 in
   with pkgs;
-    rustPlatform.buildRustPackage rec {
+    rustPlatform.buildRustPackage {
       pname = manifest.name;
       version = manifest.version;
       cargoLock.lockFile = ./Cargo.lock;

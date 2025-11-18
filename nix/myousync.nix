@@ -20,8 +20,14 @@ with lib; let
         port = cfg.port;
       };
       paths = {
-        music = "${cfg.dataDir}/music";
-        temp = "${cfg.dataDir}/temp";
+        music =
+          if cfg.paths.music != null
+          then cfg.paths.music
+          else "${cfg.dataDir}/music";
+        temp =
+          if cfg.paths.temp != null
+          then cfg.paths.temp
+          else "${cfg.dataDir}/temp";
       };
       youtube = {};
     }
@@ -76,9 +82,10 @@ in {
       default = null;
       example = "/run/secrets/myousync";
       description = ''
-        To set a database password, point `environmentFile` at a file containing:
+        To set the youtube auth data, point `environmentFile` at a file containing:
         ```
-        TODO=<pass>
+        YOUTUBE_CLIENT_ID=your_id
+        YOUTUBE_CLIENT_SECRET=your_secret
         ```
       '';
     };
@@ -87,11 +94,8 @@ in {
       type = types.attrs;
       default = {};
       description = ''
-        TODO
+        The root myousync.toml configuration. Nix specific config will overwrite values in this.
       '';
-      example = {
-        TODO = "TODO";
-      };
     };
 
     playlists = mkOption {
@@ -102,8 +106,25 @@ in {
       '';
     };
 
-    # default times
-    # paths
+    paths = mkOption {
+      type = types.submodule {
+        freeformType = settingsFormat.type;
+        options.music = mkOption {
+          type = types.nullOr types.path;
+          description = "The folder where the final tagged files will be stored";
+          default = null;
+        };
+        options.temp = mkOption {
+          type = types.nullOr types.path;
+          description = "The folder where songs will be downloaded to and held until tagged.";
+          default = null;
+        };
+      };
+      default = {};
+      description = ''
+        Paths used by myousync
+      '';
+    };
   };
 
   config = mkIf cfg.enable {

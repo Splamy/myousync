@@ -1304,8 +1304,9 @@ dependencies = [
 
 [[package]]
 name = "opusmeta"
-version = "2.0.0"
-source = "git+https://github.com/Splamy/opusmeta.git#08f4476508d9f370ff98e0f1ee51dd6051b195d6"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "043235c2df82f5f3a57652048e641a2e9f531972ab27e5eb4d532576d56156f2"
 dependencies = [
  "base64",
  "mime-sniffer",

@@ -8,5 +8,8 @@ pkgs.mkShell {
     rust-analyzer # LSP Server
     rustfmt # Formatter
     clippy # Linter
+
+    bun # Frontend
+    bun2nix.packages.${system}.default
   ];
 }

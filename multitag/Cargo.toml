@@ -13,7 +13,7 @@ id3 = "1.14.0"
 thiserror = "2"
 mp4ameta = "0.13.0"
 metaflac = "0.2.8"
-opusmeta = { git = "https://github.com/Splamy/opusmeta.git" }
+opusmeta = "2.0.1"
 oggmeta = "1.2.3"
 
 [lints.clippy]
