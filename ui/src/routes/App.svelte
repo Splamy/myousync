@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { mdScreen } from "@layerstack/svelte-stores";
 	import { onDestroy, onMount } from "svelte";
 	import { SvelteMap } from "svelte/reactivity";
 	import Video from "$lib/Video.svelte";
@@ -320,6 +321,9 @@
 	</AppBar>
 
 	<main>
+		{#if $mdScreen}
+			hi
+		{/if}
 		{#if !$jwt}
 			<div class="flex justify-center items-center pt-8">
 				<AuthForm />

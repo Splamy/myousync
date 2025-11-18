@@ -27,7 +27,8 @@
           src = "${self}/ui";
 
           nativeBuildInputs = with pkgs; [
-            bun
+            # bun
+            nodejs
           ];
           dontConfigure = true;
           dontFixup = true;
@@ -35,7 +36,8 @@
           buildPhase = ''
             runHook preBuild
 
-            bun install --no-progress --frozen-lockfile
+            # bun install --no-progress --frozen-lockfile
+            npm install
 
             runHook postBuild
           '';
@@ -52,7 +54,7 @@
 
         build-frontend = book_events:
           pkgs.runCommand "build-qint-frontend" {
-            nativeBuildInputs = with pkgs; [bun nodejs];
+            nativeBuildInputs = with pkgs; [nodejs];
             src = ./ui;
           } ''
             cp -r "$src/." .
@@ -68,7 +70,7 @@
             pwd
             ls -al
             # bun run build
-            bun --bun node_modules/.bin/rsbuild build
+            node node_modules/.bin/rsbuild build
 
             mv dist $out
           '';
