@@ -1,0 +1,10 @@
+strict_env
+# Allow overwriting
+overwritePath='.'
+
+dir="$(basename "$(pwd)")"
+path="."
+if [[ -e "$overwritePath/flake.nix" ]]; then
+	path="$overwritePath"
+fi
+use flake path:"$path" --no-write-lock-file

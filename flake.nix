@@ -58,9 +58,13 @@
             src = ./ui;
           } ''
             cp -r "$src/." .
+
+            pwd
+            ls -al
+
             ln -s ${node_modules}/node_modules ./
 
-            chmod -R +w .
+            chmod -R 777 .
 
             pwd
             ls -al
@@ -87,6 +91,8 @@
         packages.myousync-ui = myousync-ui;
 
         nixosModules.myousync = import ./nix/myousync.nix self;
+
+        devShells.default = pkgs.callPackage ./shell.nix {};
       }
     );
 

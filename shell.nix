@@ -10,6 +10,5 @@ pkgs.mkShell {
     clippy # Linter
 
     bun # Frontend
-    bun2nix.packages.${system}.default
   ];
 }
