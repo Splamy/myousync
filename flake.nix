@@ -37,7 +37,6 @@
             runHook preBuild
 
             node install --no-progress --frozen-lockfile
-            node node_modules/.bin/svelte-kit sync
             # bun install
 
             runHook postBuild
@@ -48,6 +47,7 @@
 
             mkdir -p $out
             cp -R ./node_modules $out
+            cp -R ./ $out
 
             runHook postInstall
           '';
@@ -72,7 +72,7 @@
             pwd
             ls -al
 
-            # node node_modules/.bin/svelte-kit sync
+            node node_modules/.bin/svelte-kit sync
 
             pwd
             ls -al
