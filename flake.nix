@@ -20,7 +20,7 @@
         node_modules = pkgs.stdenv.mkDerivation (finalAttrs: {
           pname = "frontend-node_modules";
           version = "1.0.0";
-          outputHash = "lTcffeW3oILrW7LQGHTfID+nzVl2hAatywfSNkFeXfw=";
+          outputHash = "MVES5AEUEGEGy+dnEVhXCt/DZ1l1zTIZMbUKmnypnyg=";
           outputHashAlgo = "sha256";
           outputHashMode = "recursive";
 
@@ -36,8 +36,9 @@
           buildPhase = ''
             runHook preBuild
 
-            # bun install --no-progress --frozen-lockfile
-            npm install
+            node install --no-progress --frozen-lockfile
+            node node_modules/.bin/svelte-kit sync
+            # bun install
 
             runHook postBuild
           '';
@@ -54,7 +55,9 @@
 
         build-frontend = book_events:
           pkgs.runCommand "build-qint-frontend" {
-            nativeBuildInputs = with pkgs; [nodejs];
+            nativeBuildInputs = with pkgs; [
+              nodejs
+            ];
             src = ./ui;
           } ''
             cp -r "$src/." .
@@ -69,7 +72,7 @@
             pwd
             ls -al
 
-            node node_modules/.bin/svelte-kit sync
+            # node node_modules/.bin/svelte-kit sync
 
             pwd
             ls -al
@@ -83,14 +86,14 @@
 
         # myousync-ui = pkgs.callPackage ./nix/default-ui.nix {};
         myousync-ui = frontend;
-        myousync = pkgs.callPackage ./. {};
+        # myousync = pkgs.callPackage ./. {};
       in rec {
         defaultPackage = packages.myousync-ui;
 
-        packages.myousync = myousync;
+        # packages.myousync = myousync;
         packages.myousync-ui = myousync-ui;
 
-        nixosModules.myousync = import ./nix/myousync.nix self;
+        # nixosModules.myousync = import ./nix/myousync.nix self;
 
         devShells.default = pkgs.callPackage ./shell.nix {};
       }
