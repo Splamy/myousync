@@ -135,7 +135,11 @@ in {
       after = ["network-online.target"];
       wants = ["network-online.target"];
       wantedBy = ["multi-user.target"];
-      # restartTriggers = [ configFile ];
+      restartTriggers = [configFile];
+
+      environment = {
+        RUST_BACKTRACE = 1; # TODO remove
+      };
 
       serviceConfig = {
         Type = "simple";
@@ -147,9 +151,6 @@ in {
         Restart = "on-failure";
         TimeoutSec = 15;
         EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
-        Environment = {
-          RUST_BACKTRACE = 1;
-        };
       };
     };
 
