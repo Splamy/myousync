@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { mdScreen } from "@layerstack/svelte-stores";
 	import { onDestroy, onMount } from "svelte";
 	import { SvelteMap } from "svelte/reactivity";
 	import Video from "$lib/Video.svelte";
