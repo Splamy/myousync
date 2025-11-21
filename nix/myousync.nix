@@ -28,6 +28,9 @@ with lib; let
           if cfg.paths.temp != null
           then cfg.paths.temp
           else "${cfg.dataDir}/temp";
+
+        file_permissions = cfg.filePermissions;
+        dir_permissions = cfg.dirPermissions;
       };
       youtube = {};
     }

@@ -510,10 +510,12 @@ pub struct MsPaths {
     /// Unix Permissions in octal for the music files.
     /// Ignored on windows
     #[serde(deserialize_with = "MsConfig::parse_permissions")]
+    #[serde(default)]
     pub file_permissions: Option<Permissions>,
     /// Unix Permissions in octal for the artist/album folders the music files will be placed in.
     /// Ignored on windows
     #[serde(deserialize_with = "MsConfig::parse_permissions")]
+    #[serde(default)]
     pub dir_permissions: Option<Permissions>,
 }
 
@@ -594,12 +596,8 @@ impl MsConfig {
     where
         D: serde::de::Deserializer<'de>,
     {
-        let perm_str = Option::<String>::deserialize(deserializer)
+        let perm_str = String::deserialize(deserializer)
             .map_err(|_| serde::de::Error::custom("Invalid permission data. Expected string"))?;
-        if perm_str.is_none() {
-            return Ok(None);
-        }
-        let perm_str = perm_str.unwrap();
         let perm_num = u32::from_str_radix(&perm_str, 8).map_err(|_| {
             serde::de::Error::custom(&format!(
                 "Permission {} is not a unix style octal parsable format",
