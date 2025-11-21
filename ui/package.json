@@ -28,7 +28,6 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@layerstack/svelte-stores": "^1.0.2",
     "svelte-ux": "^1.0.9"
   },
   "trustedDependencies": [
