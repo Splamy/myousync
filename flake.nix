@@ -52,9 +52,10 @@
         packages.myousync = myousync;
         packages.myousync-ui = myousync-ui;
 
-        nixosModules.myousync = import ./nix/myousync.nix self;
-
         devShells.default = pkgs.callPackage ./shell.nix {};
       }
-    );
+    )
+    // {
+      nixosModules.myousync = import ./nix/myousync.nix self;
+    };
 }
