@@ -9,7 +9,6 @@ env:
   CARGO_TERM_COLOR: always
 
 
-
 jobs:
   build:
     permissions:
@@ -42,7 +41,7 @@ jobs:
     - name: Pack
       run: |
         mkdir -p build/web
-        cp myousync/target/release/myousync build/
+        cp target/release/myousync build/
         cp -r ui/dist/* build/web
         chmod +x build/myousync
 
