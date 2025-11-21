@@ -1,32 +1,33 @@
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
 };
 
-use crate::{brainz::BrainzMetadata, dbdata, MsPaths, MsState};
+use crate::{MsPaths, MsState, brainz::BrainzMetadata, dbdata};
 use anyhow::Context;
 use id3::TagLike;
-use log::info;
+use log::{error, info};
 use multitag::{self, data::Album};
 use sanitise_file_name::sanitise_with_options;
 use walkdir::WalkDir;
 
 pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Result<()> {
-    let mut test_tag = multitag::Tag::read_from_path(path).context("When reading audiotags")?;
+    let mut tag = multitag::Tag::read_from_path(path).context("When reading audiotags")?;
 
-    test_tag.remove_title();
-    test_tag.set_title(&tags.brainz.title);
-    test_tag.remove_artist();
-    test_tag.set_artist(&tags.brainz.artist.join("; "));
-    let mut album = test_tag.get_album_info().unwrap_or(Album::default());
+    tag.remove_title();
+    tag.set_title(&tags.brainz.title);
+    tag.remove_artist();
+    tag.set_artist(&tags.brainz.artist.join("; "));
+    let mut album = tag.get_album_info().unwrap_or(Album::default());
     album.title = Some(tags.brainz.album.clone().unwrap_or_default());
     album.artist = Some(tags.brainz.artist.join("; "));
-    test_tag.remove_all_album_info();
-    test_tag.set_album_info(album)?;
-    test_tag.set_comment("youtube_id", tags.youtube_id.clone());
+    tag.remove_all_album_info();
+    tag.set_album_info(album)?;
+    tag.set_comment("youtube_id", tags.youtube_id.clone());
 
     if let Some(brainz_id) = tags.brainz.brainz_recording_id.as_deref() {
-        match &mut test_tag {
+        match &mut tag {
             multitag::Tag::Id3Tag { inner } => {
                 inner.remove_unique_file_identifier_by_owner_identifier("http://musicbrainz.org");
                 inner.add_frame(id3::frame::UniqueFileIdentifier {
@@ -35,18 +36,21 @@ pub fn apply_metadata_to_file(path: &Path, tags: &MetadataTags) -> anyhow::Resul
                 });
             }
             multitag::Tag::OpusTag { .. } => {
-                test_tag.set_comment("musicbrainz_trackid", brainz_id.into());
+                tag.set_comment("musicbrainz_trackid", brainz_id.into());
             }
             multitag::Tag::Mp4Tag { .. } => {
-                test_tag.set_comment("MusicBrainz Track Id", brainz_id.into());
+                tag.set_comment("MusicBrainz Track Id", brainz_id.into());
             }
             multitag::Tag::VorbisFlacTag { .. } => {
-                test_tag.set_comment("MUSICBRAINZ_TRACKID", brainz_id.into());
+                tag.set_comment("MUSICBRAINZ_TRACKID", brainz_id.into());
+            }
+            multitag::Tag::OggTag { .. } => {
+                unimplemented!()
             }
         }
     }
 
-    test_tag.write_to_path(path)?;
+    tag.write_to_path(path)?;
     Ok(())
 }
 
@@ -117,9 +121,31 @@ pub fn move_file_to_library(s: &MsState, path: &Path, tags: &MetadataTags) -> an
     std::fs::create_dir_all(&new_path)
         .map_err(|e| anyhow::anyhow!("Error creating directory: {}", e))?;
 
+    if let Some(dir_perm) = &s.config.paths.dir_permissions {
+        if let Err(err) = fs::set_permissions(&new_path, dir_perm.clone()) {
+            error!(
+                "Failed to apply permissions on '{}' to {:?}: {}",
+                &new_path.to_string_lossy(),
+                dir_perm,
+                err
+            );
+        }
+    }
+
     new_path.push(format!("{}.{}", &clean_title, &orig_extenstion));
 
     move_file(&s.config.paths, path, &new_path)?;
+
+    if let Some(perm) = &s.config.paths.file_permissions {
+        if let Err(err) = fs::set_permissions(&new_path, perm.clone()) {
+            error!(
+                "Failed to apply permissions on '{}' to {:?}: {}",
+                &new_path.to_string_lossy(),
+                perm,
+                err
+            );
+        }
+    }
 
     let mut cache = s.file_cache.lock().unwrap();
     cache.remove(&tags.youtube_id);

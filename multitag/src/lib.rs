@@ -1,11 +1,8 @@
-//! `multitag` is a crate for reading and writing audio metadata of various formats
-//!
-//! We currently support reading and writing metadata to mp3, wav, aiff, flac, and mp4/m4a/...
-//! files, with support for more formats on the way.
+#![doc = include_str!("../README.md")]
 
 pub mod data;
 
-use data::*;
+use data::{Album, Picture, Timestamp};
 use id3::Tag as Id3InternalTag;
 use id3::TagLike;
 use metaflac::Tag as FlacInternalTag;
@@ -14,9 +11,14 @@ use mp4ameta::Fourcc as Mp4Fourcc;
 use mp4ameta::FreeformIdent;
 use mp4ameta::Ident as Mp4Ident;
 use mp4ameta::Tag as Mp4InternalTag;
+use oggmeta::Tag as OggInternalTag;
+use opusmeta::LowercaseString;
 use opusmeta::Tag as OpusInternalTag;
 use std::collections::hash_map::Entry;
 use std::convert::Into;
+use std::fs::{File, OpenOptions};
+use std::io::Cursor;
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 use std::str::FromStr;
 use thiserror::Error;
@@ -50,6 +52,9 @@ pub enum Error {
     /// Wrapper around a [`opusmeta::Error`]. See there for more info.
     #[error("{0}")]
     OpusError(#[from] opusmeta::Error),
+    /// Wrapper around a [`oggmeta::Error`]. See there for more info.
+    #[error("{0}")]
+    OggError(#[from] oggmeta::Error),
     /// Unable to parse a [`Timestamp`] from a string.
     #[error("Unable to parse timestamp from string")]
     TimestampParseError,
@@ -57,6 +62,9 @@ pub enum Error {
     /// Supported types are: bmp, jpg, png.
     #[error("Given cover image data is not of valid type (bmp, jpeg, png)")]
     InvalidImageFormat,
+    /// An unspecified I/O error occurred.
+    #[error("An I/O error occurred. Please see the contained io::Error for more info.")]
+    IoError(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -67,6 +75,7 @@ pub enum Tag {
     VorbisFlacTag { inner: FlacInternalTag },
     Mp4Tag { inner: Mp4InternalTag },
     OpusTag { inner: OpusInternalTag },
+    OggTag { inner: OggInternalTag },
 }
 
 impl Tag {
@@ -88,9 +97,26 @@ impl Tag {
             .ok_or(Error::NoFileExtension)?
             .to_str()
             .ok_or(Error::InvalidFileExtension)?;
+
+        let file = OpenOptions::new().read(true).open(path)?;
+        Tag::read_from(extension, file)
+    }
+
+    /// Attempts to read a set of tags from the given reader.
+    /// The extension is necessary to determine which backend to use to decode the tags.
+    /// `extension` must be one of `[mp3, wav, aiff, flac, mp4, m4a, m4p, m4b, m4r, m4v, opus]`
+    ///
+    /// # Errors
+    /// This function can error if the given extension is not supported by this crate.
+    ///
+    /// Lastly, an error will be raised if the file type is supported but the reading the tags fails for some
+    /// reason other than missing tags.
+    /// This could be, for example, that the given reader ended too early or that the tags were
+    /// encoded improperly. Please inspect the debug output of the error for more information.
+    pub fn read_from<R: Read + Seek>(extension: &str, mut f_in: R) -> Result<Self> {
         match extension {
             "mp3" | "wav" | "aiff" => {
-                let res = Id3InternalTag::read_from_path(path);
+                let res = Id3InternalTag::read_from2(f_in);
                 if res
                     .as_ref()
                     .is_err_and(|e: &id3::Error| matches!(e.kind, id3::ErrorKind::NoTag))
@@ -102,14 +128,14 @@ impl Tag {
                 Ok(Self::Id3Tag { inner: res? })
             }
             "flac" => {
-                let inner = FlacInternalTag::read_from_path(path)?;
+                let inner = FlacInternalTag::read_from(&mut f_in)?;
                 Ok(Self::VorbisFlacTag { inner })
             }
             "mp4" | "m4a" | "m4p" | "m4b" | "m4r" | "m4v" => {
-                let res = Mp4InternalTag::read_from_path(path);
+                let res = Mp4InternalTag::read_from(&mut f_in);
                 if res
                     .as_ref()
-                    .is_err_and(|e: &mp4ameta::Error| matches!(e.kind, mp4ameta::ErrorKind::NoTag))
+                    .is_err_and(|e: &mp4ameta::Error| matches!(e.kind, mp4ameta::ErrorKind::NoFtyp))
                 {
                     return Ok(Self::Mp4Tag {
                         inner: Mp4InternalTag::default(),
@@ -118,8 +144,12 @@ impl Tag {
                 Ok(Self::Mp4Tag { inner: res? })
             }
             "opus" => {
-                let inner = OpusInternalTag::read_from_path(path)?;
+                let inner = OpusInternalTag::read_from(f_in)?;
                 Ok(Self::OpusTag { inner })
+            }
+            "ogg" => {
+                let inner = OggInternalTag::read_from(&mut f_in)?;
+                Ok(Self::OggTag { inner })
             }
             _ => Err(Error::UnsupportedAudioFormat),
         }
@@ -134,7 +164,82 @@ impl Tag {
             Self::VorbisFlacTag { inner } => inner.write_to_path(path)?,
             Self::Mp4Tag { inner } => inner.write_to_path(path)?,
             Self::OpusTag { inner } => inner.write_to_path(path)?,
-        };
+            Self::OggTag { inner } => inner.write_to_path(&path)?,
+        }
+        Ok(())
+    }
+
+    /// Write to a file. The file should already contain valid data of the correct type (e.g. the
+    /// file should already contain an opus stream in order to correctly write opus tags).
+    ///
+    /// The file's cursor should be at the beginning of the file, and it should be opened with
+    /// read and write modes set (See [`OpenOptions`] for more info).
+    ///
+    /// # Errors
+    /// This method can error if writing the tags fails, or if accessing the file fails (for
+    /// example, if the modes are set wrong).
+    pub fn write_to_file(&mut self, file: &mut File) -> Result<()> {
+        match self {
+            Self::Id3Tag { inner } => inner.write_to_file(file, id3::Version::Id3v24)?,
+            Self::VorbisFlacTag { inner } => {
+                // this is needed because metaflac doesn't provide a clean way to write without a
+                // path
+                // see https://github.com/jameshurst/rust-metaflac/issues/19 for more info
+                let mut data: Vec<u8> = Vec::new();
+                let mut cursor = Cursor::new(&mut data);
+
+                // read the existing tags from the file. Really this is just a way to move the
+                // reader to the point directly after the tags and the start of the audio, so we
+                // can copy the audio to the cursor after writing our modified tags.
+                let _ = FlacInternalTag::read_from(file)?;
+
+                inner.write_to(&mut cursor)?; // write our tags
+                std::io::copy(file, &mut cursor)?; // copy the rest of the file to the cursor
+
+                file.rewind()?; // rewind to the beginning of the file
+                file.write_all(&data)?; // dump the contents of the vec to the file
+            }
+            Self::Mp4Tag { inner } => inner.write_to(file)?,
+            Self::OpusTag { inner } => inner.write_to(file)?,
+            Self::OggTag { inner } => inner.write_to(file)?,
+        }
+
+        Ok(())
+    }
+
+    /// Write to a byte vector. The vector should already contain valid data of the correct type (e.g. the
+    /// vector should already contain an opus stream in order to correctly write opus tags).
+    ///
+    /// # Errors
+    /// This method can error if one of the internal write methods fails. If that happens, the
+    /// inner error will contain more information.
+    pub fn write_to_vec(&mut self, vec: &mut Vec<u8>) -> Result<()> {
+        // we have to clone the vec because id3 and mp4ameta don't implement their traits for
+        // Cursor<&mut Vec<u8>>, only Cursor<Vec<u8>>
+        let cloned = vec.clone();
+        let mut cursor = Cursor::new(cloned);
+
+        match self {
+            Self::Id3Tag { inner } => inner.write_to_file(&mut cursor, id3::Version::Id3v24)?,
+            Self::VorbisFlacTag { inner } => {
+                // TODO: Do this
+                let mut data: Vec<u8> = Vec::new();
+                let mut other_cursor = Cursor::new(&mut data);
+
+                let _ = FlacInternalTag::read_from(&mut cursor)?;
+
+                inner.write_to(&mut other_cursor)?; // write our tags
+                std::io::copy(&mut cursor, &mut other_cursor)?; // copy the rest of the data
+
+                cursor.rewind()?; // rewind to the beginning of the cursor
+                cursor.write_all(&data)?;
+            }
+            Self::Mp4Tag { inner } => inner.write_to(&mut cursor)?,
+            Self::OpusTag { inner } => inner.write_to(&mut cursor)?,
+            Self::OggTag { inner } => inner.write_to(&mut cursor)?,
+        }
+
+        *vec = cursor.into_inner();
         Ok(())
     }
 
@@ -159,6 +264,14 @@ impl Tag {
     pub fn new_empty_mp4() -> Self {
         Self::Mp4Tag {
             inner: Mp4InternalTag::default(),
+        }
+    }
+
+    /// Creates an empty set of tags in the Opus format.
+    #[must_use]
+    pub fn new_empty_opus() -> Self {
+        Self::OpusTag {
+            inner: OpusInternalTag::default(),
         }
     }
 }
@@ -214,9 +327,35 @@ impl Tag {
                     .get_picture_type(opusmeta::picture::PictureType::CoverFront)
                     .map(Picture::from);
 
+                let artist = inner
+                    .get_one(&"ALBUM_ARTIST".into())
+                    .or_else(|| inner.get_one(&"ALBUMARTIST".into()))
+                    .map(Into::into);
+
                 Some(Album {
-                    title: inner.get_one("ALBUM".into()).map(Into::into),
-                    artist: inner.get_one("ALBUM_ARTIST".into()).map(Into::into),
+                    title: inner.get_one(&"ALBUM".into()).map(Into::into),
+                    artist,
+                    cover,
+                })
+            }
+            Self::OggTag { inner } => {
+                let cover = inner
+                    .pictures
+                    .iter()
+                    .find(|pic| matches!(pic.picture_type, oggmeta::PictureType::FrontCover))
+                    .map(|pic| Picture::from(pic.clone()));
+
+                Some(Album {
+                    title: inner
+                        .comments
+                        .get("album")?
+                        .first()
+                        .map(std::convert::Into::into),
+                    artist: inner
+                        .comments
+                        .get("album_artist")?
+                        .first()
+                        .map(std::convert::Into::into),
                     cover,
                 })
             }
@@ -297,6 +436,20 @@ impl Tag {
                     inner.add_picture(&pic)?;
                 }
             }
+            Self::OggTag { inner } => {
+                if let Some(title) = album.title {
+                    inner.comments.insert("album".into(), vec![title]);
+                }
+                if let Some(album_artist) = album.artist {
+                    inner
+                        .comments
+                        .insert("album_artist".into(), vec![album_artist]);
+                }
+                if let Some(picture) = album.cover {
+                    // Try to decode the image to obtain width/height and color depth
+                    inner.pictures.push(picture.data.as_slice().try_into()?);
+                }
+            }
         }
         Ok(())
     }
@@ -323,11 +476,16 @@ impl Tag {
                 inner.remove_artworks();
             }
             Self::OpusTag { inner } => {
-                inner.remove_entries("ALBUM".into());
-                inner.remove_entries("ALBUMARTIST".into());
-                inner.remove_entries("ALBUM_ARTIST".into());
+                inner.remove_entries(&"ALBUM".into());
+                inner.remove_entries(&"ALBUMARTIST".into());
+                inner.remove_entries(&"ALBUM_ARTIST".into());
 
                 let _ = inner.remove_picture_type(opusmeta::picture::PictureType::CoverFront);
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("ALBUM");
+                inner.comments.remove("ALBUM_ARTIST");
+                inner.comments.remove("ALBUMARTIST");
             }
         }
     }
@@ -339,7 +497,12 @@ impl Tag {
             Self::Id3Tag { inner } => inner.title(),
             Self::VorbisFlacTag { inner } => inner.get_vorbis("TITLE")?.next(),
             Self::Mp4Tag { inner } => inner.title(),
-            Self::OpusTag { inner } => inner.get_one("TITLE".into()).map(String::as_str),
+            Self::OpusTag { inner } => inner.get_one(&"TITLE".into()).map(String::as_str),
+            Self::OggTag { inner } => inner
+                .comments
+                .get("TITLE")
+                .and_then(|o| o.first())
+                .map(String::as_str),
         }
     }
 
@@ -350,6 +513,11 @@ impl Tag {
             Self::VorbisFlacTag { inner } => inner.set_vorbis("TITLE", vec![title]),
             Self::Mp4Tag { inner } => inner.set_title(title),
             Self::OpusTag { inner } => inner.add_one("TITLE".into(), title.into()),
+            Self::OggTag { inner } => inner
+                .comments
+                .entry("TITLE".into())
+                .or_default()
+                .push(title.into()),
         }
     }
 
@@ -360,7 +528,10 @@ impl Tag {
             Self::VorbisFlacTag { inner } => inner.remove_vorbis("TITLE"),
             Self::Mp4Tag { inner } => inner.remove_title(),
             Self::OpusTag { inner } => {
-                inner.remove_entries("TITLE".into());
+                inner.remove_entries(&"TITLE".into());
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("TITLE");
             }
         }
     }
@@ -379,7 +550,8 @@ impl Tag {
             )
             .filter(|s| !s.is_empty()),
             Self::Mp4Tag { inner } => inner.artist().map(std::string::ToString::to_string),
-            Self::OpusTag { inner } => Some(inner.get("ARTIST".into())?.join("; ")),
+            Self::OpusTag { inner } => Some(inner.get(&"ARTIST".into())?.join("; ")),
+            Self::OggTag { inner } => Some(inner.comments.get("ARTIST")?.join("; ")),
         }
     }
 
@@ -390,8 +562,12 @@ impl Tag {
             Self::VorbisFlacTag { inner } => inner.set_vorbis("ARTIST", vec![artist]),
             Self::Mp4Tag { inner } => inner.set_artist(artist),
             Self::OpusTag { inner } => {
-                inner.remove_entries("ARTIST".into());
+                inner.remove_entries(&"ARTIST".into());
                 inner.add_one("ARTIST".into(), artist.into());
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("ARTIST");
+                inner.comments.insert("ARTIST".into(), vec![artist.into()]);
             }
         }
     }
@@ -403,7 +579,10 @@ impl Tag {
             Self::VorbisFlacTag { inner } => inner.remove_vorbis("ARTIST"),
             Self::Mp4Tag { inner } => inner.remove_artists(),
             Self::OpusTag { inner } => {
-                inner.remove_entries("ARTIST".into());
+                inner.remove_entries(&"ARTIST".into());
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("ARTIST");
             }
         }
     }
@@ -426,8 +605,12 @@ impl Tag {
                     Timestamp::from_str(data.1.clone().into_string()?.as_str()).ok()
                 })?,
             Self::OpusTag { inner } => inner
-                .get_one("DATE".into())
+                .get_one(&"DATE".into())
                 .and_then(|s| Timestamp::from_str(s).ok()),
+            Self::OggTag { inner } => inner
+                .comments
+                .get("DATE")
+                .and_then(|v| Timestamp::from_str(v.first()?).ok()),
         }
     }
 
@@ -456,7 +639,7 @@ impl Tag {
                 )),
             ),
             Self::OpusTag { inner } => {
-                inner.remove_entries("DATE".into());
+                inner.remove_entries(&"DATE".into());
                 inner.add_one(
                     "DATE".into(),
                     format!(
@@ -465,6 +648,18 @@ impl Tag {
                         timestamp.month.unwrap_or_default(),
                         timestamp.day.unwrap_or_default()
                     ),
+                );
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("DATE");
+                inner.comments.insert(
+                    "DATE".into(),
+                    vec![format!(
+                        "{:04}-{:02}-{:02}",
+                        timestamp.year,
+                        timestamp.month.unwrap_or_default(),
+                        timestamp.day.unwrap_or_default()
+                    )],
                 );
             }
         }
@@ -479,7 +674,10 @@ impl Tag {
             Self::VorbisFlacTag { inner } => inner.remove_vorbis("DATE"),
             Self::Mp4Tag { inner } => inner.remove_data_of(&DATE_FOURCC),
             Self::OpusTag { inner } => {
-                inner.remove_entries("DATE".into());
+                inner.remove_entries(&"DATE".into());
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("DATE");
             }
         }
     }
@@ -505,6 +703,57 @@ impl Tag {
         }
     }
 
+    /// Gets lyrics
+    /// Since Opus metadata doesn't specify a field for lyrics. It will try to get LYRICS tag field
+    #[must_use]
+    pub fn lyrics(&self) -> Option<String> {
+        match self {
+            Self::Id3Tag { inner } => Some(inner.lyrics().map(|l| l.text.clone()).collect()),
+            Self::VorbisFlacTag { inner } => Some(inner.get_vorbis("LYRICS")?.collect()),
+            Self::Mp4Tag { inner } => Some(inner.userdata.lyrics()?.to_owned()),
+            Self::OpusTag { inner } => Some(inner.get_one(&"LYRICS".into())?.to_string()),
+            Self::OggTag { inner } => Some(inner.comments.get("LYRICS")?.first()?.to_string()),
+        }
+    }
+
+    /// Sets lyrics
+    pub fn set_lyrics(&mut self, lyrics: &str) {
+        match self {
+            Self::Id3Tag { inner } => {
+                inner.add_frame(id3::frame::Lyrics {
+                    lang: String::new(),
+                    description: String::new(),
+                    text: lyrics.to_string(),
+                });
+            }
+            Self::VorbisFlacTag { inner } => inner.set_vorbis("LYRICS", vec![lyrics]),
+            Self::Mp4Tag { inner } => inner.set_lyrics(lyrics),
+            Self::OpusTag { inner } => {
+                inner.remove_entries(&"LYRICS".into());
+                inner.add_one("LYRICS".into(), lyrics.into());
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("LYRICS");
+                inner.comments.insert("LYRICS".into(), vec![lyrics.into()]);
+            }
+        }
+    }
+
+    /// Removes lyrics
+    pub fn remove_lyrics(&mut self) {
+        match self {
+            Self::Id3Tag { inner } => inner.remove_all_lyrics(),
+            Self::VorbisFlacTag { inner } => inner.remove_vorbis("LYRICS"),
+            Self::Mp4Tag { inner } => inner.remove_lyrics(),
+            Self::OpusTag { inner } => {
+                inner.remove_entries(&"LYRICS".into());
+            }
+            Self::OggTag { inner } => {
+                inner.comments.remove("LYRICS");
+            }
+        }
+    }
+
     #[must_use]
     /// Gets all comments with the given key.
     pub fn get_comment(&self, key: &str) -> Option<String> {
@@ -519,14 +768,19 @@ impl Tag {
                 .map(|c| c.map(String::from).next())
                 .unwrap_or_default(),
             Self::Mp4Tag { inner } => inner
-                .data_of(&FreeformIdent::new("com.apple.iTunes", key))
+                .data_of(&FreeformIdent::new_borrowed("com.apple.iTunes", key))
                 .filter_map(|data| match data {
                     Mp4Data::Utf8(s) => Some(s.clone()),
                     Mp4Data::Utf16(s) => Some(s.clone()),
                     _ => None,
                 })
                 .next(),
-            Self::OpusTag { inner } => inner.get(key.into()).and_then(|f| f.first().cloned()),
+            Self::OpusTag { inner } => inner
+                .get(&LowercaseString::new(key))
+                .and_then(|f| f.first().cloned()),
+            Self::OggTag { inner } => {
+                unimplemented!()
+            }
         }
     }
 
@@ -541,13 +795,16 @@ impl Tag {
             }
             Self::Mp4Tag { inner } => {
                 inner.set_data(
-                    FreeformIdent::new("com.apple.iTunes", key),
+                    FreeformIdent::new_borrowed("com.apple.iTunes", key),
                     Mp4Data::Utf8(value),
                 );
             }
             Self::OpusTag { inner } => {
-                inner.remove_entries(key.into());
+                inner.remove_entries(&LowercaseString::new(key));
                 inner.add_many(key.into(), vec![value]);
+            }
+            Self::OggTag { inner } => {
+                unimplemented!()
             }
         }
     }
@@ -577,12 +834,15 @@ impl Tag {
             }
             Self::Mp4Tag { inner } => {
                 inner.add_data(
-                    FreeformIdent::new("com.apple.iTunes", key),
+                    FreeformIdent::new_borrowed("com.apple.iTunes", key),
                     Mp4Data::Utf8(value),
                 );
             }
             Self::OpusTag { inner } => {
                 inner.add_one(key.into(), value);
+            }
+            Self::OggTag { inner } => {
+                unimplemented!()
             }
         }
     }
@@ -603,19 +863,22 @@ impl Tag {
             }
             Self::Mp4Tag { inner } => {
                 if let Some(value) = value {
-                    inner.retain_data_of(&FreeformIdent::new("com.apple.iTunes", key), |entry| {
-                        if let Mp4Data::Utf8(s) = entry {
-                            s != value
-                        } else {
-                            true
-                        }
-                    });
+                    inner.retain_data_of(
+                        &FreeformIdent::new_borrowed("com.apple.iTunes", key),
+                        |entry| {
+                            if let Mp4Data::Utf8(s) = entry {
+                                s != value
+                            } else {
+                                true
+                            }
+                        },
+                    );
                 } else {
-                    inner.remove_data_of(&FreeformIdent::new("com.apple.iTunes", key));
+                    inner.remove_data_of(&FreeformIdent::new_borrowed("com.apple.iTunes", key));
                 }
             }
             Self::OpusTag { inner } => {
-                if let Some(mut list) = inner.remove_entries(key.into()) {
+                if let Some(mut list) = inner.remove_entries(&LowercaseString::new(key)) {
                     if let Some(value) = value {
                         list.retain(|x| x != value);
                         if !list.is_empty() {
@@ -623,6 +886,9 @@ impl Tag {
                         }
                     }
                 }
+            }
+            Self::OggTag { inner } => {
+                unimplemented!()
             }
         }
     }

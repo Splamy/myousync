@@ -1,5 +1,6 @@
-//! This module contains useful types for representing audio metadata information. The types in
-//! this module are typically returned by methods on [`Tag`](crate::Tag).
+//! Useful types for representing audio metadata information.
+//!
+//! The types in this module are typically returned by methods on [`Tag`](crate::Tag).
 
 use crate::{Error, Result};
 use id3::frame::Picture as Id3Picture;
@@ -7,6 +8,7 @@ use id3::frame::Timestamp as Id3Timestamp;
 use metaflac::block::Picture as FlacPicture;
 use mp4ameta::Img as Mp4Picture;
 use mp4ameta::ImgFmt as Mp4ImageFmt;
+use oggmeta::Picture as OggPicture;
 use opusmeta::picture::Picture as OpusPicture;
 use std::str::FromStr;
 
@@ -18,6 +20,7 @@ pub struct Album {
     pub cover: Option<Picture>,
 }
 
+/// Stores picture data.
 #[derive(Clone, Debug)]
 pub struct Picture {
     pub data: Vec<u8>,
@@ -78,6 +81,15 @@ impl From<OpusPicture> for Picture {
         Self {
             data: value.data,
             mime_type: value.mime_type,
+        }
+    }
+}
+
+impl From<OggPicture> for Picture {
+    fn from(value: OggPicture) -> Self {
+        Self {
+            data: value.data,
+            mime_type: value.media_type,
         }
     }
 }

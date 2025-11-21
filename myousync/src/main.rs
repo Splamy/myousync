@@ -9,15 +9,15 @@ mod ytdlp;
 
 use anyhow::anyhow;
 use axum::{
+    Json, Router,
     body::Body,
     extract::{
-        ws::{Message, WebSocketUpgrade},
         Path,
+        ws::{Message, WebSocketUpgrade},
     },
     http::{Request, StatusCode},
     middleware,
     response::IntoResponse,
-    Json, Router,
 };
 use brainz::{BrainzMetadata, BrainzMultiSearch};
 use chrono::Utc;
@@ -29,10 +29,13 @@ use reqwest::Method;
 use serde::Deserialize;
 use std::{
     collections::HashSet,
+    env,
+    fs::Permissions,
     future::Future,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
+    u32,
 };
 use tokio::sync::broadcast::Sender;
 use tower_http::{
@@ -52,7 +55,26 @@ static TRIGGER_PLAYLIST_SYNC: LazyLock<Sender<()>> =
 async fn main() {
     colog::init();
 
-    let s = MsState::new();
+    let config_path = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .or(env::var("MYOUSYNC_CONFIG_FILE").ok())
+            .unwrap_or("myousync.toml".into()),
+    );
+    let s = MsState::new(&config_path);
+
+    if !s.config.paths.music.exists() {
+        std::fs::create_dir(&s.config.paths.music).expect("Failed to find or create music folder");
+    }
+    if !s.config.paths.temp.exists() {
+        std::fs::create_dir(&s.config.paths.temp).expect("Failed to find or create temp folder");
+    }
+    if let Some(migrate_path) = &s.config.paths.migrate
+        && !migrate_path.exists()
+    {
+        std::fs::create_dir(migrate_path).expect("Failed to find or create migrate folder");
+    }
+
     tokio::select! {
         _ = run_server(&s) => {},
         _ = playlist_sync_loop(&s) => {},
@@ -210,7 +232,7 @@ async fn run_server(s: &MsState) {
             .layer(cors_layer.clone()), //.layer(middleware::from_fn(auth::auth)),
         )
         .route("/ws", axum::routing::get(ws_handler))
-        .fallback_service(ServeDir::new("web"));
+        .fallback_service(ServeDir::new(&s.config.web.path));
 
     let endpoint = format!("0.0.0.0:{}", s.config.web.port);
     let listener = tokio::net::TcpListener::bind(endpoint).await.unwrap();
@@ -380,20 +402,18 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     info!("checking vid {}", status.video_id);
 
     let dlp_file: YtDlpResponse = match status.fetch_status {
-        FetchStatus::NotFetched => {
-            match ytdlp::get(s, &status.video_id).await {
-                Ok(dlp_file) => {
-                    status.fetch_time = Utc::now().timestamp() as u64;
-                    MsState::push_update_state(&mut status, FetchStatus::Fetched);
-                    dlp_file
-                }
-                Err(err) => {
-                    status.last_error = Some(err.to_string());
-                    MsState::push_update_state(&mut status, FetchStatus::FetchError);
-                    return Err(anyhow!("Fetch error: {}", err));
-                }
+        FetchStatus::NotFetched => match ytdlp::get(s, &status.video_id).await {
+            Ok(dlp_file) => {
+                status.fetch_time = Utc::now().timestamp() as u64;
+                MsState::push_update_state(&mut status, FetchStatus::Fetched);
+                dlp_file
             }
-        }
+            Err(err) => {
+                status.last_error = Some(err.to_string());
+                MsState::push_update_state(&mut status, FetchStatus::FetchError);
+                return Err(anyhow!("Fetch error: {}", err));
+            }
+        },
         FetchStatus::FetchError => {
             info!("Video {} fetch error", status.video_id);
             return Ok(());
@@ -486,11 +506,24 @@ pub struct MsPaths {
     pub music: PathBuf,
     pub temp: PathBuf,
     pub migrate: Option<PathBuf>,
+
+    /// Unix Permissions in octal for the music files.
+    /// Ignored on windows
+    #[serde(deserialize_with = "MsConfig::parse_permissions")]
+    #[serde(default)]
+    pub file_permissions: Option<Permissions>,
+    /// Unix Permissions in octal for the artist/album folders the music files will be placed in.
+    /// Ignored on windows
+    #[serde(deserialize_with = "MsConfig::parse_permissions")]
+    #[serde(default)]
+    pub dir_permissions: Option<Permissions>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MsYoutube {
+    #[serde(default = "MsConfig::get_youtube_client_id_from_env")]
     pub client_id: String,
+    #[serde(default = "MsConfig::get_youtube_client_secret_from_env")]
     pub client_secret: String,
 }
 
@@ -498,6 +531,8 @@ pub struct MsYoutube {
 pub struct MsWeb {
     #[serde(default = "MsConfig::default_port")]
     pub port: u16,
+    #[serde(default = "MsConfig::default_web_path")]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -514,16 +549,22 @@ pub struct MsScrape {
     #[serde(deserialize_with = "deserialize_duration")]
     #[serde(default = "MsConfig::default_playlist_sync_rate")]
     pub playlist_sync_rate: Duration,
+    #[serde(default = "MsConfig::default_yt_dlp")]
+    pub yt_dlp: String,
 }
 
 impl MsConfig {
-    fn read() -> Result<Self, anyhow::Error> {
-        let config = std::fs::read_to_string("msync.toml")?;
+    fn read(config_path: &std::path::Path) -> Result<Self, anyhow::Error> {
+        let config = std::fs::read_to_string(config_path)?;
         Ok(toml::from_str::<MsConfig>(&config)?)
     }
 
     const fn default_port() -> u16 {
         3001
+    }
+
+    fn default_web_path() -> String {
+        "web".to_string()
     }
 
     const fn default_yt_dlp_rate() -> Duration {
@@ -536,6 +577,44 @@ impl MsConfig {
 
     const fn default_playlist_sync_rate() -> Duration {
         Duration::from_secs(60 * 5)
+    }
+
+    fn get_youtube_client_id_from_env() -> String {
+        env::var("YOUTUBE_CLIENT_ID").expect("youtube client id is not set")
+    }
+
+    fn get_youtube_client_secret_from_env() -> String {
+        env::var("YOUTUBE_CLIENT_SECRET").expect("youtube client secret is not set")
+    }
+
+    fn default_yt_dlp() -> String {
+        "yt-dlp".into()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parse_permissions<'de, D>(deserializer: D) -> Result<Option<Permissions>, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let perm_str = String::deserialize(deserializer)
+            .map_err(|_| serde::de::Error::custom("Invalid permission data. Expected string"))?;
+        let perm_num = u32::from_str_radix(&perm_str, 8).map_err(|_| {
+            serde::de::Error::custom(&format!(
+                "Permission {} is not a unix style octal parsable format",
+                &perm_str
+            ))
+        })?;
+
+        let perm = std::os::unix::fs::PermissionsExt::from_mode(perm_num);
+        Ok(Some(perm))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn parse_permissions<'de, D>(deserializer: D) -> Result<Option<Permissions>, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        Ok(None)
     }
 }
 
@@ -562,9 +641,12 @@ pub struct MsState {
 }
 
 impl MsState {
-    pub fn new() -> Self {
+    pub fn new(config_path: &std::path::Path) -> Self {
         MsState {
-            config: MsConfig::read().expect("Failed to read config"),
+            config: MsConfig::read(config_path).expect(&format!(
+                "Failed to read config at {}",
+                config_path.to_string_lossy()
+            )),
             file_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
