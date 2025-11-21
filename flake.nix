@@ -17,83 +17,48 @@
         };
         lib = pkgs.lib;
 
-        node_modules = pkgs.stdenv.mkDerivation (finalAttrs: {
-          pname = "frontend-node_modules";
+        frontend = pkgs.buildNpmPackage (finalAttrs: {
+          pname = "mfron";
           version = "1.0.0";
-          outputHash = "MVES5AEUEGEGy+dnEVhXCt/DZ1l1zTIZMbUKmnypnyg=";
-          outputHashAlgo = "sha256";
-          outputHashMode = "recursive";
 
           src = "${self}/ui";
+          # npmRoot = "./ui";
+          # npmDepsHash = "sha256-bAkXqFvrYiEMltW21CE7VMeqRzAOeJfztCRLkgWNfIo=";
 
-          nativeBuildInputs = with pkgs; [
-            # bun
-            nodejs
-          ];
-          dontConfigure = true;
-          dontFixup = true;
+          npmDeps = pkgs.importNpmLock {
+            npmRoot = "${self}/ui";
+          };
+          npmConfigHook = pkgs.importNpmLock.npmConfigHook;
 
-          buildPhase = ''
-            runHook preBuild
-
-            node install --no-progress --frozen-lockfile
-            # bun install
-
-            runHook postBuild
-          '';
+          # The prepack script runs the build script, which we'd rather do in the build phase.
+          npmPackFlags = ["--ignore-scripts" "--legacy-peer-deps"];
+          #
+          # NODE_OPTIONS = "--openssl-legacy-provider";
 
           installPhase = ''
             runHook preInstall
 
             mkdir -p $out
-            cp -R ./node_modules $out
-            cp -R ./ $out
+            cp -R ./dist/* $out
+            # cp -R ./ $out
 
             runHook postInstall
           '';
+
+          meta = {
+            description = "arst";
+          };
         });
 
-        build-frontend = book_events:
-          pkgs.runCommand "build-qint-frontend" {
-            nativeBuildInputs = with pkgs; [
-              nodejs
-            ];
-            src = ./ui;
-          } ''
-            cp -r "$src/." .
-
-            pwd
-            ls -al
-
-            ln -s ${node_modules}/node_modules ./
-
-            chmod -R 777 .
-
-            pwd
-            ls -al
-
-            node node_modules/.bin/svelte-kit sync
-
-            pwd
-            ls -al
-            # bun run build
-            node node_modules/.bin/rsbuild build
-
-            mv dist $out
-          '';
-
-        frontend = build-frontend "";
-
-        # myousync-ui = pkgs.callPackage ./nix/default-ui.nix {};
         myousync-ui = frontend;
-        # myousync = pkgs.callPackage ./. {};
+        myousync = pkgs.callPackage ./. {};
       in rec {
-        defaultPackage = packages.myousync-ui;
+        defaultPackage = packages.myousync;
 
-        # packages.myousync = myousync;
+        packages.myousync = myousync;
         packages.myousync-ui = myousync-ui;
 
-        # nixosModules.myousync = import ./nix/myousync.nix self;
+        nixosModules.myousync = import ./nix/myousync.nix self;
 
         devShells.default = pkgs.callPackage ./shell.nix {};
       }
