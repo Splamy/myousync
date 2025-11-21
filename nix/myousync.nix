@@ -138,7 +138,7 @@ in {
       restartTriggers = [configFile];
 
       environment = {
-        RUST_BACKTRACE = 1; # TODO remove
+        RUST_BACKTRACE = "1"; # TODO remove
       };
 
       serviceConfig = {
