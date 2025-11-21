@@ -321,9 +321,6 @@
 	</AppBar>
 
 	<main>
-		{#if $mdScreen}
-			hi
-		{/if}
 		{#if !$jwt}
 			<div class="flex justify-center items-center pt-8">
 				<AuthForm />
