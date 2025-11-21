@@ -230,7 +230,7 @@ async fn run_server(s: &MsState) {
             .layer(cors_layer.clone()), //.layer(middleware::from_fn(auth::auth)),
         )
         .route("/ws", axum::routing::get(ws_handler))
-        .fallback_service(ServeDir::new("web"));
+        .fallback_service(ServeDir::new(&s.config.web.path));
 
     let endpoint = format!("0.0.0.0:{}", s.config.web.port);
     let listener = tokio::net::TcpListener::bind(endpoint).await.unwrap();

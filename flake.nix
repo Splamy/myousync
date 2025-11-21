@@ -15,10 +15,8 @@
         pkgs = (import nixpkgs) {
           inherit system;
         };
-        lib = pkgs.lib;
-
-        frontend = pkgs.buildNpmPackage (finalAttrs: {
-          pname = "mfron";
+        myousync-ui = pkgs.buildNpmPackage (finalAttrs: {
+          pname = "myousync-ui";
           version = "1.0.0";
 
           src = "${self}/ui";
@@ -32,25 +30,21 @@
 
           # The prepack script runs the build script, which we'd rather do in the build phase.
           npmPackFlags = ["--ignore-scripts" "--legacy-peer-deps"];
-          #
-          # NODE_OPTIONS = "--openssl-legacy-provider";
 
           installPhase = ''
             runHook preInstall
 
             mkdir -p $out
             cp -R ./dist/* $out
-            # cp -R ./ $out
 
             runHook postInstall
           '';
 
           meta = {
-            description = "arst";
+            description = "myousync-ui static pages";
           };
         });
 
-        myousync-ui = frontend;
         myousync = pkgs.callPackage ./. {};
       in rec {
         defaultPackage = packages.myousync;
@@ -63,26 +57,4 @@
         devShells.default = pkgs.callPackage ./shell.nix {};
       }
     );
-
-  # outputs = {
-  #   self,
-  #   nixpkgs,
-  # }: let
-  #   systems = ["x86_64-linux"];
-  #   forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs {inherit system;}));
-  # in {
-  #   nixosModules.myousync = import ./nix/myousync.nix self;
-  #   # overlays.default = import ./nix/overlay.nix;
-  #
-  #   packages = forAllSystems (pkgs: {
-  #     myousync-ui = pkgs.callPackage ./nix/default-ui.nix {};
-  #     myousync = pkgs.callPackage ./. {};
-  #
-  #     default = self.packages.${pkgs.stdenv.hostPlatform.system}.myousync;
-  #   });
-  #
-  #   devShells = forAllSystems (pkgs: {
-  #     default = pkgs.callPackage ./shell.nix {};
-  #   });
-  # };
 }
