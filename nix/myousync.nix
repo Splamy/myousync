@@ -7,6 +7,7 @@ self: {
 with lib; let
   system = "x86_64-linux";
   bin-default = self.packages.${system}.myousync;
+  ui-default = self.packages.${system}.myousync-ui;
   yt-dlp = lib.getExe pkgs.yt-dlp;
   cfg = config.services.myousync;
   settingsFormat = pkgs.formats.toml {};
@@ -18,6 +19,7 @@ with lib; let
       };
       web = {
         port = cfg.port;
+        path = ui-default.outPath;
       };
       paths = {
         music =
