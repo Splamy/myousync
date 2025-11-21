@@ -125,6 +125,24 @@ in {
         Paths used by myousync
       '';
     };
+
+    filePermissions = mkOption {
+      type = types.str;
+      default = "664";
+      example = "664";
+      description = ''
+        Unix Permissions in octal for the music files.
+      '';
+    };
+
+    dirPermissions = mkOption {
+      type = types.str;
+      default = "0775";
+      example = "0775";
+      description = ''
+        Unix Permissions in octal for the artist/album folders the music files will be placed in.
+      '';
+    };
   };
 
   config = mkIf cfg.enable {

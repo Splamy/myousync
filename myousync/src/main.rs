@@ -30,10 +30,12 @@ use serde::Deserialize;
 use std::{
     collections::HashSet,
     env,
+    fs::Permissions,
     future::Future,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
+    u32,
 };
 use tokio::sync::broadcast::Sender;
 use tower_http::{
@@ -504,6 +506,15 @@ pub struct MsPaths {
     pub music: PathBuf,
     pub temp: PathBuf,
     pub migrate: Option<PathBuf>,
+
+    /// Unix Permissions in octal for the music files.
+    /// Ignored on windows
+    #[serde(deserialize_with = "MsConfig::parse_permissions")]
+    pub file_permissions: Option<Permissions>,
+    /// Unix Permissions in octal for the artist/album folders the music files will be placed in.
+    /// Ignored on windows
+    #[serde(deserialize_with = "MsConfig::parse_permissions")]
+    pub dir_permissions: Option<Permissions>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -576,6 +587,36 @@ impl MsConfig {
 
     fn default_yt_dlp() -> String {
         "yt-dlp".into()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parse_permissions<'de, D>(deserializer: D) -> Result<Option<Permissions>, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let perm_str = Option::<String>::deserialize(deserializer)
+            .map_err(|_| serde::de::Error::custom("Invalid permission data. Expected string"))?;
+        if perm_str.is_none() {
+            return Ok(None);
+        }
+        let perm_str = perm_str.unwrap();
+        let perm_num = u32::from_str_radix(&perm_str, 8).map_err(|_| {
+            serde::de::Error::custom(&format!(
+                "Permission {} is not a unix style octal parsable format",
+                &perm_str
+            ))
+        })?;
+
+        let perm = std::os::unix::fs::PermissionsExt::from_mode(perm_num);
+        Ok(Some(perm))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn parse_permissions<'de, D>(deserializer: D) -> Result<Option<Permissions>, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        Ok(None)
     }
 }
 

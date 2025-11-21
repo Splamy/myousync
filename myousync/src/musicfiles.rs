@@ -1,12 +1,13 @@
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
 };
 
 use crate::{MsPaths, MsState, brainz::BrainzMetadata, dbdata};
 use anyhow::Context;
 use id3::TagLike;
-use log::info;
+use log::{error, info};
 use multitag::{self, data::Album};
 use sanitise_file_name::sanitise_with_options;
 use walkdir::WalkDir;
@@ -120,9 +121,31 @@ pub fn move_file_to_library(s: &MsState, path: &Path, tags: &MetadataTags) -> an
     std::fs::create_dir_all(&new_path)
         .map_err(|e| anyhow::anyhow!("Error creating directory: {}", e))?;
 
+    if let Some(dir_perm) = &s.config.paths.dir_permissions {
+        if let Err(err) = fs::set_permissions(&new_path, dir_perm.clone()) {
+            error!(
+                "Failed to apply permissions on '{}' to {:?}: {}",
+                &new_path.to_string_lossy(),
+                dir_perm,
+                err
+            );
+        }
+    }
+
     new_path.push(format!("{}.{}", &clean_title, &orig_extenstion));
 
     move_file(&s.config.paths, path, &new_path)?;
+
+    if let Some(perm) = &s.config.paths.file_permissions {
+        if let Err(err) = fs::set_permissions(&new_path, perm.clone()) {
+            error!(
+                "Failed to apply permissions on '{}' to {:?}: {}",
+                &new_path.to_string_lossy(),
+                perm,
+                err
+            );
+        }
+    }
 
     let mut cache = s.file_cache.lock().unwrap();
     cache.remove(&tags.youtube_id);

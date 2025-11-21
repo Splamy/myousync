@@ -1,12 +1,12 @@
 {pkgs ? import <nixpkgs> {}}: let
-  manifest = (pkgs.lib.importTOML ./myousync/Cargo.toml).package;
+  manifest = (pkgs.lib.importTOML ../../myousync/Cargo.toml).package;
 in
   with pkgs;
     rustPlatform.buildRustPackage {
       pname = manifest.name;
       version = manifest.version;
-      cargoLock.lockFile = ./Cargo.lock;
-      src = pkgs.lib.cleanSource ./.;
+      cargoLock.lockFile = ../../Cargo.lock;
+      src = pkgs.lib.cleanSource ../../.;
       meta = {
         mainProgram = "myousync";
       };

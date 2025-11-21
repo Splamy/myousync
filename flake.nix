@@ -10,49 +10,20 @@
     nixpkgs,
     flake-utils,
   }:
-    flake-utils.lib.eachSystem ["x86_64-linux"] (
+    flake-utils.lib.eachDefaultSystem (
       system: let
         pkgs = (import nixpkgs) {
           inherit system;
         };
-        myousync-ui = pkgs.buildNpmPackage (finalAttrs: {
-          pname = "myousync-ui";
-          version = "1.0.0";
-
-          src = "${self}/ui";
-          # npmRoot = "./ui";
-          # npmDepsHash = "sha256-bAkXqFvrYiEMltW21CE7VMeqRzAOeJfztCRLkgWNfIo=";
-
-          npmDeps = pkgs.importNpmLock {
-            npmRoot = "${self}/ui";
-          };
-          npmConfigHook = pkgs.importNpmLock.npmConfigHook;
-
-          # The prepack script runs the build script, which we'd rather do in the build phase.
-          npmPackFlags = ["--ignore-scripts" "--legacy-peer-deps"];
-
-          installPhase = ''
-            runHook preInstall
-
-            mkdir -p $out
-            cp -R ./dist/* $out
-
-            runHook postInstall
-          '';
-
-          meta = {
-            description = "myousync-ui static pages";
-          };
-        });
-
-        myousync = pkgs.callPackage ./. {};
+        myousync-ui = pkgs.callPackage ./nix/frontend/. {};
+        myousync = pkgs.callPackage ./nix/backend/. {};
       in rec {
         defaultPackage = packages.myousync;
 
         packages.myousync = myousync;
         packages.myousync-ui = myousync-ui;
 
-        devShells.default = pkgs.callPackage ./shell.nix {};
+        devShells.default = pkgs.callPackage ./nix/shell.nix {};
       }
     )
     // {
