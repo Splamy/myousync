@@ -11,7 +11,8 @@ use thiserror::Error;
 
 static LIMITER: Limiter = Limiter::new(std::time::Duration::from_millis(1500));
 const RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-static SPLIT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bft\.?|\bfeat\.?|;|&").unwrap());
+static SPLIT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bft\.?|\bfeat\.?|;|&").unwrap());
 
 #[derive(Error, Debug)]
 pub enum BrainzError {
@@ -30,7 +31,11 @@ pub async fn fetch_recordings(search: &RecordingSearch) -> Result<BrainzMetadata
     if let Some(part) = search.title.to_query_part("recording") {
         parts.push(part);
     }
-    for part in search.artist.iter().flat_map(|a| a.to_query_part("artist")) {
+    for part in search
+        .artist
+        .iter()
+        .filter_map(|a| a.to_query_part("artist"))
+    {
         parts.push(part);
     }
     if let Some(part) = search.album.to_query_part("release") {
@@ -45,20 +50,17 @@ pub async fn fetch_recordings(search: &RecordingSearch) -> Result<BrainzMetadata
 }
 
 async fn fetch_recordings_by_id(id: &str) -> Result<BrainzMetadata, BrainzError> {
-    let query = format!("rid:{}", id);
+    let query = format!("rid:{id}");
     fetch_recordings_url(&query).await
 }
 
 async fn fetch_recordings_url(query: &str) -> Result<BrainzMetadata, BrainzError> {
-    let url = format!(
-        "http://musicbrainz.org/ws/2/recording/?limit=3&query={}",
-        query
-    );
+    let url = format!("http://musicbrainz.org/ws/2/recording/?limit=3&query={query}");
 
     let response = if let Some(cached_response) = dbdata::DB.try_get_brainz(&url) {
         cached_response
     } else {
-        debug!("Fetching brainz data from {}", url);
+        debug!("Fetching brainz data from {url}");
         LIMITER.wait_for_next_fetch().await;
 
         let response = loop {
@@ -136,12 +138,6 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
     if dlp.title.contains(" - ") {
         let parts: Vec<&str> = dlp.title.split(" - ").collect();
 
-        fn split_artists(artist: &str) -> impl Iterator<Item = String> + use<'_> {
-            SPLIT_REGEX
-                .split(artist)
-                .map(|s| s.trim().to_string().replace(['(', ')', '[' , ']' , '【', '】'], ""))
-        }
-
         search.push(RecordingSearch {
             title: QTerm::Exact(parts[1].to_string()),
             artist: split_artists(parts[0]).map(QTerm::Exact).collect(),
@@ -173,25 +169,33 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
 
     if brainz_res.is_none() {
         for search_opt in search {
-            info!("Searching brainz by {:?}", search_opt);
+            info!("Searching brainz by {search_opt:?}");
 
             match self::fetch_recordings(&search_opt).await {
                 Ok(result) => {
-                    debug!("Got result with {:?}", result);
+                    debug!("Got result with {result:?}");
                     brainz_res = Some(result);
                     break;
                 }
                 Err(e) => {
-                    error!("Error: {:?}", e);
+                    error!("Error: {e:?}");
                 }
             }
         }
     }
 
     let brainz_res = brainz_res.ok_or(BrainzError::EmptyResult);
-    info!("Got brainz res: {:?}", brainz_res);
+    info!("Got brainz res: {brainz_res:?}");
 
     brainz_res
+}
+
+fn split_artists(artist: &str) -> impl Iterator<Item = String> + use<'_> {
+    SPLIT_REGEX.split(artist).map(|s| {
+        s.trim()
+            .to_string()
+            .replace(['(', ')', '[', ']', '【', '】'], "")
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

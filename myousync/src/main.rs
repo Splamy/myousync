@@ -1,6 +1,16 @@
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::redundant_closure_for_method_calls
+)]
+
 mod auth;
 mod brainz;
 mod dbdata;
+mod jellyfin;
+mod minicli;
 mod musicfiles;
 mod net;
 mod util;
@@ -35,7 +45,6 @@ use std::{
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
-    u32,
 };
 use tokio::sync::broadcast::Sender;
 use tower_http::{
@@ -44,20 +53,31 @@ use tower_http::{
 };
 use ytdlp::YtDlpResponse;
 
+use crate::{
+    dbdata::YoutubeVideoId,
+    minicli::{CliResult, process_args},
+};
+
 static NOTIFY_MUSIC_UPDATE: LazyLock<Sender<String>> =
     LazyLock::new(|| tokio::sync::broadcast::channel::<String>(100).0);
 static TRIGGER_MUSIC_TAG: LazyLock<Sender<()>> =
     LazyLock::new(|| tokio::sync::broadcast::channel::<()>(1).0);
 static TRIGGER_PLAYLIST_SYNC: LazyLock<Sender<()>> =
     LazyLock::new(|| tokio::sync::broadcast::channel::<()>(1).0);
+static TRIGGER_JELLYFIN_SYNC: LazyLock<Sender<()>> =
+    LazyLock::new(|| tokio::sync::broadcast::channel::<()>(1).0);
 
 #[tokio::main]
 async fn main() {
     colog::init();
 
+    let config_path_opt = match process_args() {
+        CliResult::Exit => return,
+        CliResult::Continue(path) => path,
+    };
+
     let config_path = PathBuf::from(
-        std::env::args()
-            .nth(1)
+        config_path_opt
             .or(env::var("MYOUSYNC_CONFIG_FILE").ok())
             .unwrap_or("myousync.toml".into()),
     );
@@ -79,6 +99,7 @@ async fn main() {
         _ = run_server(&s) => {},
         _ = playlist_sync_loop(&s) => {},
         _ = music_tag_loop(&s) => {},
+        _ = jellyfin_sync_loop(&s) => {},
     }
 }
 
@@ -124,7 +145,7 @@ async fn run_server(s: &MsState) {
         .route(
             "/video/{video}/retry_fetch",
             axum::routing::post({
-                async move |Path(video_id): Path<String>| {
+                async move |Path(video_id): Path<YoutubeVideoId>| {
                     MsState::push_override(&video_id, |v| {
                         if v.is_downloaded() {
                             return false;
@@ -140,7 +161,7 @@ async fn run_server(s: &MsState) {
         .route(
             "/video/{video}/query",
             axum::routing::post({
-                async move |Path(video_id): Path<String>,
+                async move |Path(video_id): Path<YoutubeVideoId>,
                             Json(query): Json<Option<BrainzMultiSearch>>| {
                     MsState::push_override(&video_id, |v| {
                         if !v.is_downloaded() {
@@ -164,7 +185,7 @@ async fn run_server(s: &MsState) {
         .route(
             "/video/{video}/result",
             axum::routing::post({
-                async move |Path(video_id): Path<String>,
+                async move |Path(video_id): Path<YoutubeVideoId>,
                             Json(result): Json<Option<BrainzMetadata>>| {
                     MsState::push_override(&video_id, |v| {
                         if !v.is_downloaded() {
@@ -189,16 +210,19 @@ async fn run_server(s: &MsState) {
             "/video/{video}/delete",
             axum::routing::post({
                 let s = s.clone();
-                async move |Path(video_id): Path<String>| {
+                async move |Path(video_id): Path<YoutubeVideoId>| {
                     MsState::push_override(&video_id, |v| {
                         dbdata::DB.delete_yt_data(&video_id);
-                        if let Some(file) = find_file(&s, &video_id) {
-                            if let Err(err) = musicfiles::delete_file(&s.config.paths, &file) {
-                                let err = err.to_string();
-                                error!("Error deleting file: {:?}", err);
-                                v.last_error = Some(err);
-                                return false;
-                            }
+
+                        let mut cache = s.file_cache.lock().unwrap();
+                        if let Some(file) = find_file(&s, &video_id, &mut cache)
+                            && let Err(err) =
+                                musicfiles::delete_file(&s.config.paths, &file, &mut cache)
+                        {
+                            let err = err.to_string();
+                            error!("Error deleting file: {err:?}");
+                            v.last_error = Some(err);
+                            return false;
                         }
 
                         v.fetch_status = FetchStatus::Disabled;
@@ -213,20 +237,23 @@ async fn run_server(s: &MsState) {
             "/video/{video}/preview",
             axum::routing::get({
                 let s = s.clone();
-                async move |headers: axum::http::HeaderMap, Path(video_id): Path<String>| {
-                    if let Some(path) = find_file(&s, &video_id) {
-                        let mut req = Request::new(Body::empty());
-                        *req.headers_mut() = headers;
-                        return ServeFile::new(path).try_call(req).await.map_err(|e| {
-                            error!("Error serving file: {:?}", e);
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Error serving file".to_string(),
-                            )
-                        });
-                    }
-
-                    Err((StatusCode::NOT_FOUND, "File not found".to_string()))
+                async move |headers: axum::http::HeaderMap, Path(video_id): Path<YoutubeVideoId>| {
+                    let path = {
+                        let mut cache = s.file_cache.lock().unwrap();
+                        let Some(path) = find_file(&s, &video_id, &mut cache) else {
+                            return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+                        };
+                        path
+                    };
+                    let mut req = Request::new(Body::empty());
+                    *req.headers_mut() = headers;
+                    ServeFile::new(path).try_call(req).await.map_err(|e| {
+                        error!("Error serving file: {e:?}");
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Error serving file".to_string(),
+                        )
+                    })
                 }
             })
             .layer(cors_layer.clone()), //.layer(middleware::from_fn(auth::auth)),
@@ -267,7 +294,7 @@ async fn playlist_sync_loop(s: &MsState) {
         },
         "Playlist sync",
     )
-    .await
+    .await;
 }
 
 async fn music_tag_loop(s: &MsState) {
@@ -276,15 +303,28 @@ async fn music_tag_loop(s: &MsState) {
         TRIGGER_MUSIC_TAG.clone(),
         async || {
             let all_ids = dbdata::DB.get_all_unprocessed_ids();
+
             for video_id in all_ids {
                 if let Err(err) = sync_playlist_item(s, &video_id).await {
-                    error!("Error processing song: {:?}", err);
+                    error!("Error processing song: {err:?}");
                 }
             }
         },
         "Music tagger",
     )
-    .await
+    .await;
+}
+
+async fn jellyfin_sync_loop(s: &MsState) {
+    trigger_loop(
+        s.config.scrape.jellyfin_sync_rate,
+        TRIGGER_JELLYFIN_SYNC.clone(),
+        async || {
+            jellyfin::sync_all(s).await;
+        },
+        "Jellyfin sync",
+    )
+    .await;
 }
 
 async fn trigger_loop<
@@ -300,19 +340,19 @@ async fn trigger_loop<
     let mut interval = tokio::time::interval(time.into());
     let mut trigger = trigger.subscribe();
 
-    debug!("Starting loop: {}", display);
+    debug!("Starting loop: {display}");
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
             },
             res = trigger.recv() => {
-                debug!("Triggered: {:?}", res);
+                debug!("Triggered: {res:?}");
             }
         }
-        info!("Entering loop: {}", display);
+        info!("Entering loop: {display}");
         loop_body().await;
-        debug!("Exiting loop: {}", display);
+        debug!("Exiting loop: {display}");
     }
 }
 
@@ -340,7 +380,7 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
                 ))
                 .await
             {
-                debug!("Error sending init message: {:?}", err);
+                debug!("Error sending init message: {err:?}");
                 return;
             }
         }
@@ -348,10 +388,10 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
         while let Ok(msg) = rx
             .recv()
             .await
-            .inspect_err(|e| warn!("Error receiving message: {:?}", e))
+            .inspect_err(|e| warn!("Error receiving message: {e:?}"))
         {
             if let Err(err) = socket.send(Message::Text(msg.into())).await {
-                debug!("Error sending message: {:?}", err);
+                debug!("Error sending message: {err:?}");
                 break;
             }
         }
@@ -361,10 +401,12 @@ async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
 }
 
 async fn sync_all(s: &MsState) {
+    let playlist_configs = dbdata::DB.get_playlist_config();
     let all_ids = dbdata::DB.get_all_ids().into_iter().collect::<HashSet<_>>();
 
-    for playlist_id in s.config.scrape.playlists.iter() {
-        info!("Syncing {}", playlist_id);
+    for playlist_config in playlist_configs.iter() {
+        let playlist_id = &playlist_config.playlist_id;
+        info!("Syncing {playlist_id}");
         match yt_api::get_playlist(&s.config, playlist_id).await {
             Ok(playlist) => {
                 for item in playlist.items.iter() {
@@ -372,29 +414,27 @@ async fn sync_all(s: &MsState) {
                         continue;
                     }
 
-                    MsState::push_update(&mut VideoStatus {
-                        video_id: item.video_id.to_owned(),
-                        fetch_status: FetchStatus::NotFetched,
-                        last_query: Some(BrainzMultiSearch {
-                            trackid: None,
-                            title: item.title.clone(),
-                            artist: Some(item.artist.clone()),
-                            album: None,
-                        }),
-                        ..Default::default()
+                    let mut video_status = VideoStatus::new(item.video_id.clone());
+                    video_status.fetch_status = FetchStatus::NotFetched;
+                    video_status.last_query = Some(BrainzMultiSearch {
+                        trackid: None,
+                        title: item.title.clone(),
+                        artist: Some(item.artist.clone()),
+                        album: None,
                     });
+                    MsState::push_update(&mut video_status);
 
                     MsState::trigger_tagger();
                 }
             }
             Err(e) => {
-                error!("Error with playlist sync: {:?}", e);
+                error!("Error with playlist sync: {e:?}");
             }
         }
     }
 }
 
-async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
+async fn sync_playlist_item(s: &MsState, video_id: &YoutubeVideoId) -> anyhow::Result<()> {
     let mut status = dbdata::DB
         .get_video(video_id)
         .ok_or_else(|| anyhow!("Video not found"))?;
@@ -411,7 +451,7 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
             Err(err) => {
                 status.last_error = Some(err.to_string());
                 MsState::push_update_state(&mut status, FetchStatus::FetchError);
-                return Err(anyhow!("Fetch error: {}", err));
+                return Err(anyhow!("Fetch error: {err}"));
             }
         },
         FetchStatus::FetchError => {
@@ -471,7 +511,10 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     };
     MsState::push_update(&mut status);
 
-    let file = find_file(s, &status.video_id).ok_or_else(|| anyhow!("No file found"))?;
+    let mut cache = s.file_cache.lock().unwrap();
+
+    let file =
+        find_file(s, &status.video_id, &mut cache).ok_or_else(|| anyhow!("No file found"))?;
 
     let tags = MetadataTags {
         youtube_id: status.video_id.clone(),
@@ -481,7 +524,8 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     // apply metadata to file
     musicfiles::apply_metadata_to_file(&file, &tags)?;
 
-    musicfiles::move_file_to_library(s, &file, &tags)?;
+    musicfiles::move_file_to_library(s, &file, &tags, &mut cache)?;
+    drop(cache);
 
     status.last_error = None;
     MsState::push_update_state(&mut status, FetchStatus::Categorized);
@@ -489,19 +533,20 @@ async fn sync_playlist_item(s: &MsState, video_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn find_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
-    ytdlp::find_local_file(s, video_id).or_else(|| musicfiles::find_local_file(s, video_id))
+fn find_file(s: &MsState, video_id: &YoutubeVideoId, cache: &mut FileCache) -> Option<PathBuf> {
+    ytdlp::find_local_file(s, video_id).or_else(|| musicfiles::find_local_file(s, video_id, cache))
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Deserialize)]
 pub struct MsConfig {
     pub paths: MsPaths,
     pub youtube: MsYoutube,
     pub web: MsWeb,
     pub scrape: MsScrape,
+    pub jellyfin: Option<MsJellyfin>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Deserialize)]
 pub struct MsPaths {
     pub music: PathBuf,
     pub temp: PathBuf,
@@ -519,7 +564,7 @@ pub struct MsPaths {
     pub dir_permissions: Option<Permissions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Deserialize)]
 pub struct MsYoutube {
     #[serde(default = "MsConfig::get_youtube_client_id_from_env")]
     pub client_id: String,
@@ -527,7 +572,7 @@ pub struct MsYoutube {
     pub client_secret: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Deserialize)]
 pub struct MsWeb {
     #[serde(default = "MsConfig::default_port")]
     pub port: u16,
@@ -535,10 +580,8 @@ pub struct MsWeb {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Deserialize)]
 pub struct MsScrape {
-    pub playlists: Vec<String>,
-
     /// Min wait between requests to youtube-dl
     #[serde(deserialize_with = "deserialize_duration")]
     #[serde(default = "MsConfig::default_yt_dlp_rate")]
@@ -549,14 +592,32 @@ pub struct MsScrape {
     #[serde(deserialize_with = "deserialize_duration")]
     #[serde(default = "MsConfig::default_playlist_sync_rate")]
     pub playlist_sync_rate: Duration,
+    #[serde(deserialize_with = "deserialize_duration")]
+    #[serde(default = "MsConfig::default_jellyfin_sync_rate")]
+    pub jellyfin_sync_rate: Duration,
     #[serde(default = "MsConfig::default_yt_dlp")]
     pub yt_dlp: String,
+}
+
+#[derive(Deserialize)]
+pub struct MsJellyfin {
+    pub server: String,
+    pub user: String,
+    pub password: String,
+    pub collection: String,
+    pub rewrite_path: Option<MsJellyfinRewrite>,
+}
+
+#[derive(Deserialize)]
+pub struct MsJellyfinRewrite {
+    pub from: String,
+    pub to: String,
 }
 
 impl MsConfig {
     fn read(config_path: &std::path::Path) -> Result<Self, anyhow::Error> {
         let config = std::fs::read_to_string(config_path)?;
-        Ok(toml::from_str::<MsConfig>(&config)?)
+        Ok(toml::from_str::<Self>(&config)?)
     }
 
     const fn default_port() -> u16 {
@@ -579,6 +640,10 @@ impl MsConfig {
         Duration::from_secs(60 * 5)
     }
 
+    const fn default_jellyfin_sync_rate() -> Duration {
+        Duration::from_secs(60 * 10)
+    }
+
     fn get_youtube_client_id_from_env() -> String {
         env::var("YOUTUBE_CLIENT_ID").expect("youtube client id is not set")
     }
@@ -599,7 +664,7 @@ impl MsConfig {
         let perm_str = String::deserialize(deserializer)
             .map_err(|_| serde::de::Error::custom("Invalid permission data. Expected string"))?;
         let perm_num = u32::from_str_radix(&perm_str, 8).map_err(|_| {
-            serde::de::Error::custom(&format!(
+            serde::de::Error::custom(format!(
                 "Permission {} is not a unix style octal parsable format",
                 &perm_str
             ))
@@ -619,6 +684,7 @@ impl MsConfig {
 }
 
 impl MsPaths {
+    #[must_use]
     pub fn get_base_paths(&self) -> Vec<&std::path::Path> {
         let mut paths = vec![self.music.as_path(), self.temp.as_path()];
         if let Some(migrate) = &self.migrate {
@@ -627,6 +693,7 @@ impl MsPaths {
         paths
     }
 
+    #[must_use]
     pub fn is_sub_file(&self, path: &std::path::Path) -> bool {
         self.get_base_paths()
             .iter()
@@ -634,24 +701,30 @@ impl MsPaths {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MsState {
-    pub config: MsConfig,
-    pub file_cache: Arc<Mutex<std::collections::HashMap<String, PathBuf>>>,
+    pub config: Arc<MsConfig>,
+    pub file_cache: Arc<Mutex<FileCache>>,
+}
+
+pub struct FileCache {
+    lookup: std::collections::HashMap<YoutubeVideoId, PathBuf>,
 }
 
 impl MsState {
+    #[must_use]
     pub fn new(config_path: &std::path::Path) -> Self {
-        MsState {
-            config: MsConfig::read(config_path).expect(&format!(
-                "Failed to read config at {}",
-                config_path.to_string_lossy()
-            )),
-            file_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        Self {
+            config: Arc::new(MsConfig::read(config_path).unwrap_or_else(|_| {
+                panic!("Failed to read config at {}", config_path.to_string_lossy())
+            })),
+            file_cache: Arc::new(Mutex::new(FileCache {
+                lookup: std::collections::HashMap::new(),
+            })),
         }
     }
 
-    pub fn push_override<F: Fn(&mut VideoStatus) -> bool>(video_id: &str, modify: F) {
+    pub fn push_override<F: Fn(&mut VideoStatus) -> bool>(video_id: &YoutubeVideoId, modify: F) {
         if let Some(v) = dbdata::DB.modify_video_status(video_id, modify) {
             Self::trigger_tagger();
             Self::push_update_notification(&v);

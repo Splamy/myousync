@@ -1,20 +1,28 @@
 use std::sync::LazyLock;
 
 use axum::{
+    Json,
     body::Body,
     extract::Request,
     http::{self, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
 use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
-use rand::distr::{Alphanumeric, SampleString};
+use log::info;
+use rand::{
+    Rng,
+    distr::{Alphanumeric, SampleString},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::dbdata;
+use pbkdf2::{
+    Pbkdf2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
+};
 
 static SECRET: LazyLock<Box<str>> = LazyLock::new(|| get_server_secret().into_boxed_str());
 
@@ -34,16 +42,17 @@ pub struct SignInData {
 pub async fn sign_in(
     Json(user_data): Json<SignInData>, // JSON payload containing sign-in data
 ) -> Result<impl IntoResponse, AuthError> {
+    info!("Got login request for {}", &user_data.username);
     let user = match dbdata::DB.get_user(&user_data.username) {
         Some(user) => user, // User found, proceed with authentication
         None => {
             return Err(AuthError {
                 message: "User not found".to_string(),
                 status_code: StatusCode::UNAUTHORIZED,
-            })
+            });
         } // User not found, return unauthorized status
     };
-    if user.password != user_data.password {
+    if verify_password(&user.password, &user_data.password) {
         return Err(AuthError {
             message: "Invalid password".to_string(),
             status_code: StatusCode::UNAUTHORIZED,
@@ -87,6 +96,29 @@ pub fn decode_jwt(jwt_token: &str) -> Result<TokenData<Claims>, StatusCode> {
     result
 }
 
+pub fn hash_password(password: &str) -> String {
+    let mut rng = rand::rng();
+    let mut bytes = [0u8; Salt::RECOMMENDED_LENGTH];
+    rng.fill(&mut bytes);
+    let salt = SaltString::encode_b64(&bytes).unwrap();
+
+    let params = pbkdf2::Params {
+        rounds: 1000,
+        ..Default::default()
+    };
+    Pbkdf2
+        .hash_password_customized(password.as_bytes(), None, None, params, &salt)
+        .unwrap()
+        .to_string()
+}
+
+pub fn verify_password(stored: &str, password: &str) -> bool {
+    let parsed_hash = PasswordHash::new(stored).unwrap();
+    Pbkdf2
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
+}
+
 pub struct AuthError {
     pub message: String,
     pub status_code: StatusCode,
@@ -107,7 +139,7 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
             return Err(AuthError {
                 message: "Please add the JWT token to the header".to_string(),
                 status_code: StatusCode::FORBIDDEN,
-            })
+            });
         }
     };
     let mut header = auth_header.split_whitespace();
@@ -118,7 +150,7 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
             return Err(AuthError {
                 message: "Unable to decode token".to_string(),
                 status_code: StatusCode::UNAUTHORIZED,
-            })
+            });
         }
     };
     // Fetch the user details from the database
@@ -128,7 +160,7 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
             return Err(AuthError {
                 message: "You are not an authorized user".to_string(),
                 status_code: StatusCode::UNAUTHORIZED,
-            })
+            });
         }
     };
     Ok(next.run(req).await)

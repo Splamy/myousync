@@ -1,6 +1,6 @@
 use std::{io, mem};
 
-use crate::{net::CLIENT, MsConfig};
+use crate::{MsConfig, dbdata::YoutubePlaylistId, net::CLIENT};
 use chrono::TimeDelta;
 use log::{debug, info};
 use serde::Deserialize;
@@ -87,7 +87,7 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
         "https://www.googleapis.com/auth/youtube",
     ));
 
-    debug!("form_data: {}", form_data);
+    debug!("form_data: {form_data}");
 
     let code_response = CLIENT
         .post("https://oauth2.googleapis.com/device/code")
@@ -162,7 +162,10 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
     Err(YTError::AuthTimeExceeded)
 }
 
-pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playlist, YTError> {
+pub async fn get_playlist(
+    config: &MsConfig,
+    playlist_id: &YoutubePlaylistId,
+) -> Result<Playlist, YTError> {
     let maybe_cached_playlist = dbdata::DB.try_get_playlist(playlist_id);
 
     if maybe_cached_playlist
@@ -175,12 +178,12 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
 
     let auth = get_auth(config).await?;
 
-    debug!("Getting playlist: {}", playlist_id);
+    debug!("Getting playlist: {playlist_id}");
     let mut response = get_playlist_reponse(&auth, playlist_id, None).await?;
     let mut next_page = response.next_page_token.take();
     let page_info = response.page_info.clone();
 
-    debug!("Got page info: {:?}", page_info);
+    debug!("Got page info: {page_info:?}");
 
     if let Some(cached_playlist) = maybe_cached_playlist {
         if cached_playlist.etag == response.etag
@@ -196,7 +199,7 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
     debug!("Creating new playlist");
 
     let mut playlist = Playlist {
-        playlist_id: playlist_id.to_owned(),
+        playlist_id: playlist_id.clone(),
         fetch_time: chrono::Utc::now(),
         etag: mem::take(&mut response.etag),
         total_results: page_info.total_results,
@@ -206,7 +209,7 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
     drain_to(&mut playlist.items, response);
 
     while let Some(next_page_key) = next_page {
-        debug!("Getting next page: {}", next_page_key);
+        debug!("Getting next page: {next_page_key}");
 
         let mut response = get_playlist_reponse(&auth, playlist_id, Some(&next_page_key)).await?;
         next_page = response.next_page_token.take();
@@ -223,14 +226,14 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
 
 async fn get_playlist_reponse(
     auth: &AuthData,
-    playlist_id: &str,
+    playlist_id: &YoutubePlaylistId,
     page: Option<&str>,
 ) -> Result<YtPlaylistItemsResponse, YTError> {
     let mut req = CLIENT
         .get("https://www.googleapis.com/youtube/v3/playlistItems")
         .query(&[
             ("part", "snippet"),
-            ("playlistId", playlist_id),
+            ("playlistId", playlist_id.as_ref()),
             ("maxResults", "50"),
         ]);
     if let Some(page) = page {
@@ -247,24 +250,23 @@ async fn get_playlist_reponse(
 }
 
 fn drain_to(items: &mut Vec<PlaylistItem>, response: YtPlaylistItemsResponse) {
-    for mut item in response.items.into_iter() {
+    for (index, mut item) in response.items.into_iter().enumerate() {
         let artist = if let Some(mut artist) = item.snippet.video_owner_channel_title.take() {
             const STRIP_SUFFIX: &str = " - Topic";
             if artist.ends_with(STRIP_SUFFIX) {
                 artist.truncate(artist.len() - STRIP_SUFFIX.len());
-                artist
-            } else {
-                artist
             }
-            .to_owned()
+            artist
         } else {
             mem::take(&mut item.snippet.channel_title)
         };
 
         items.push(PlaylistItem {
-            video_id: mem::take(&mut item.snippet.resource_id.video_id),
+            video_id: mem::take(&mut item.snippet.resource_id.video_id).into(),
             title: mem::take(&mut item.snippet.title),
             artist,
+            position: index as u32,
+            jelly_status: dbdata::JellyStatus::NotSynced,
         });
     }
 }

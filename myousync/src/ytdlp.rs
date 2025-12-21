@@ -6,9 +6,9 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::{
-    dbdata::{self},
-    util::limiter::Limiter,
     MsState,
+    dbdata::{self, YoutubeVideoId},
+    util::limiter::Limiter,
 };
 
 static LIMITER: Limiter = Limiter::new(std::time::Duration::from_secs(10));
@@ -25,12 +25,12 @@ pub enum YtDlpError {
     CommandError(String),
 }
 
-pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpError> {
+pub async fn get(s: &MsState, video_id: &YoutubeVideoId) -> Result<YtDlpResponse, YtDlpError> {
     if let Some(file) = try_get_metadata(video_id) {
         return Ok(file);
     }
 
-    info!("Getting yt-dlp for: {}", video_id);
+    info!("Getting yt-dlp for: {video_id}");
     LIMITER
         .wait_for_next_fetch_of_time(s.config.scrape.yt_dlp_rate)
         .await;
@@ -54,7 +54,7 @@ pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
         Ok(json) => json,
         Err(json_err) => {
             let dlp_stderr = String::from_utf8(dlp_output.stderr)?.trim().to_string();
-            error!("Got ERROR yt-dlp: {} | {}", json_err, dlp_stderr);
+            error!("Got ERROR yt-dlp: {json_err} | {dlp_stderr}");
             return Err(YtDlpError::CommandError(dlp_stderr));
         }
     };
@@ -74,7 +74,7 @@ pub async fn get(s: &MsState, video_id: &str) -> Result<YtDlpResponse, YtDlpErro
     Ok(dlp_res)
 }
 
-pub fn try_get_metadata(video_id: &str) -> Option<YtDlpResponse> {
+pub fn try_get_metadata(video_id: &YoutubeVideoId) -> Option<YtDlpResponse> {
     if let Some(dlp_res) = dbdata::DB.try_get_yt_dlp(video_id) {
         let ytdlp_data = serde_json::from_str(&dlp_res).unwrap();
         return Some(ytdlp_data);
@@ -82,9 +82,9 @@ pub fn try_get_metadata(video_id: &str) -> Option<YtDlpResponse> {
     None
 }
 
-pub fn find_local_file(s: &MsState, video_id: &str) -> Option<PathBuf> {
+pub fn find_local_file(s: &MsState, video_id: &YoutubeVideoId) -> Option<PathBuf> {
     let mut path = s.config.paths.temp.clone();
-    path.push(format!("{}.*", video_id));
+    path.push(format!("{video_id}.*"));
     glob::glob(path.to_str().unwrap())
         .unwrap()
         .next()

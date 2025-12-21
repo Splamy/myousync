@@ -9,14 +9,14 @@ pub struct Limiter {
 
 impl Limiter {
     pub const fn new(time: std::time::Duration) -> Self {
-        Limiter {
+        Self {
             wait_time: time,
             last_fetch: Mutex::new(DateTime::<Utc>::MIN_UTC),
         }
     }
 
     pub async fn wait_for_next_fetch(&self) {
-		self.wait_for_next_fetch_of_time(self.wait_time).await
+        self.wait_for_next_fetch_of_time(self.wait_time).await
     }
 
     pub async fn wait_for_next_fetch_of_time(&self, wait_time: std::time::Duration) {
