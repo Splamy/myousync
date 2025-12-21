@@ -1,15 +1,23 @@
-use std::sync::{LazyLock, Mutex};
+use std::{
+    borrow::Borrow,
+    fmt::{Debug, Display},
+    ops::Deref,
+    sync::{LazyLock, Mutex},
+};
 
 use chrono::{DateTime, Utc};
-use log::info;
-use rusqlite::{Connection, Params};
+use log::{debug, info};
+use rusqlite::{Connection, Params, ToSql, types::FromSql};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::from_rows;
 
-use crate::brainz::{BrainzMetadata, BrainzMultiSearch};
+use crate::{
+    brainz::{BrainzMetadata, BrainzMultiSearch},
+    jellyfin,
+};
 
 pub static DB: LazyLock<DbState> = LazyLock::new(|| DbState::new());
-const DB_VERSION: u32 = 1;
+const DB_VERSION: u32 = 2;
 
 pub struct DbState {
     conn: Mutex<Connection>,
@@ -32,6 +40,11 @@ impl DbState {
                 refresh_token TEXT NOT NULL,
                 expires_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS playlist_config (
+                playlist_id TEXT PRIMARY KEY NOT NULL,
+                jelly_playlist_id TEXT DEFAULT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS playlists (
                 playlist_id TEXT PRIMARY KEY NOT NULL,
                 etag TEXT NOT NULL,
@@ -43,6 +56,8 @@ impl DbState {
                 video_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 artist TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                jelly_status INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (playlist_id, video_id),
                 FOREIGN KEY (playlist_id) REFERENCES playlists(playlist_id) ON DELETE CASCADE
             );
@@ -59,11 +74,13 @@ impl DbState {
                 last_query TEXT DEFAULT NULL,
                 last_result TEXT DEFAULT NULL,
                 override_query TEXT DEFAULT NULL,
-                override_result TEXT DEFAULT NULL
+                override_result TEXT DEFAULT NULL,
+                last_error TEXT DEFAULT NULL,
+                jelly_id TEXT DEFAULT NULL
             );
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY NOT NULL,
-                password BLOB NOT NULL
+                password TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS kvp (
                 key TEXT PRIMARY KEY NOT NULL,
@@ -78,69 +95,119 @@ impl DbState {
             conn: Mutex::new(conn),
         };
 
-        let cur_ver: u32 = state
-            .get_key("version")
-            .map(|v| v.parse().expect("Invalid version"))
-            .unwrap_or(0u32);
-
-        if cur_ver < DB_VERSION {
-            info!(
-                "Upgrading database from version {} to {}",
-                cur_ver, DB_VERSION
-            );
-
-            let mut new_ver = cur_ver;
-            if new_ver == 0 {
-                new_ver = 1;
-                {
-                    let con = &state.conn.lock().unwrap();
-                    con.execute(
-                        "ALTER TABLE status ADD COLUMN last_error TEXT DEFAULT NULL",
-                        [],
-                    )
-                    .unwrap();
-                }
-                state.set_key("version", &new_ver.to_string());
-            }
-
-            info!("Database upgrade complete");
-        }
+        DbState::migrate(&state);
 
         state
     }
+
+    fn migrate(state: &DbState) {
+        let cur_ver: u32 = state
+            .get_key("version")
+            .map(|v| v.parse().expect("Invalid version"))
+            .unwrap_or(DB_VERSION);
+
+        if cur_ver >= DB_VERSION {
+            return;
+        }
+
+        info!(
+            "Upgrading database from version {} to {}",
+            cur_ver, DB_VERSION
+        );
+
+        let mut new_ver = cur_ver;
+        if new_ver == 0 {
+            new_ver = 1;
+            let con = &state.conn.lock().unwrap();
+            con.run("ALTER TABLE status ADD COLUMN last_error TEXT DEFAULT NULL");
+            state.set_key_with_con(con, "version", &new_ver.to_string());
+        }
+        if new_ver == 1 {
+            new_ver = 2;
+            let con = &state.conn.lock().unwrap();
+
+            con.run_all(&[
+                "ALTER TABLE status ADD COLUMN jelly_id TEXT DEFAULT NULL",
+                "ALTER TABLE playlist_items ADD COLUMN position INTEGER DEFAULT 0",
+                "ALTER TABLE playlist_items ADD COLUMN jelly_status INTEGER NOT NULL DEFAULT 0",
+                "DELETE FROM users",
+                "ALTER TABLE users DROP COLUMN password",
+                "ALTER TABLE users ADD COLUMN password TEXT NOT NULL DEFAULT ''",
+            ]);
+            state.set_key_with_con(con, "version", &new_ver.to_string());
+        }
+
+        info!("Database upgrade complete");
+    }
+
     // YT_API
 
-    pub fn set_yt_dlp(&self, video_id: &str, dlp: &str) {
+    pub fn set_yt_dlp(&self, video_id: &YoutubeVideoId, dlp: &str) {
         self.set_ytdata(video_id, dlp, "ytdlp");
     }
 
-    pub fn delete_yt_data(&self, video_id: &str) {
+    pub fn delete_yt_data(&self, video_id: &YoutubeVideoId) {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM ytdata WHERE video_id = ?1", [video_id])
             .unwrap();
     }
 
-    fn set_ytdata(&self, video_id: &str, data: &str, col: &str) {
+    fn set_ytdata(&self, video_id: &YoutubeVideoId, data: &str, col: &str) {
         let conn = self.conn.lock().unwrap();
         let query = format!(
-            "INSERT INTO ytdata (video_id, {col}) VALUES (?1, ?2) ON CONFLICT(video_id) DO UPDATE SET {col} = ?2");
+            "INSERT INTO ytdata (video_id, {col}) VALUES (?1, ?2) ON CONFLICT(video_id) DO UPDATE SET {col} = ?2"
+        );
         conn.execute(&query, (&video_id, &data)).unwrap();
     }
 
-    pub fn try_get_yt_dlp(&self, video_id: &str) -> Option<String> {
+    pub fn try_get_yt_dlp(&self, video_id: &YoutubeVideoId) -> Option<String> {
         self.try_get_ytdata(video_id, "ytdlp")
     }
 
-    fn try_get_ytdata(&self, video_id: &str, col: &str) -> Option<String> {
+    fn try_get_ytdata(&self, video_id: &YoutubeVideoId, col: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
         let query = format!("SELECT {col} FROM ytdata WHERE video_id = ?1");
         conn.query_row(&query, [video_id], |row| row.get::<_, Option<String>>(0))
             .get_single_row()?
     }
 
+    // PLAYLIST Config
+
+    pub fn get_playlist_config(&self) -> Vec<PlaylistConfig> {
+        self.all(
+            "SELECT playlist_id, jelly_playlist_id, enabled FROM playlist_config",
+            (),
+        )
+    }
+
+    pub fn add_playlist_config(&self, playlist_config: &PlaylistConfig) {
+        let conn = self.conn.lock().unwrap();
+        let query = r#"INSERT INTO playlist_config (playlist_id, jelly_playlist_id, enabled) 
+               VALUES (?1, ?2, ?3) 
+               ON CONFLICT(playlist_id) DO UPDATE SET jelly_playlist_id = ?2, enabled = ?3"#;
+        conn.execute(
+            &query,
+            (
+                &playlist_config.playlist_id,
+                &playlist_config.jelly_playlist_id,
+                playlist_config.enabled,
+            ),
+        )
+        .unwrap();
+    }
+
+    pub fn delete_playlist_config(&self, playlist_id: &YoutubePlaylistId) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM playlist_config WHERE playlist_id = ?1",
+            (playlist_id,),
+        )
+        .unwrap();
+    }
+
     // PLAYLISTS
 
-    pub fn try_get_playlist(&self, playlist_id: &str) -> Option<Playlist> {
+    pub fn try_get_playlist(&self, playlist_id: &YoutubePlaylistId) -> Option<Playlist> {
         let conn = self.conn.lock().unwrap();
         let mut playlist = conn
             .query_row(
@@ -159,15 +226,20 @@ impl DbState {
             .get_single_row()?;
 
         let mut stmt = conn
-            .prepare("SELECT video_id, title, artist FROM playlist_items WHERE playlist_id = ?1")
+            .prepare(
+                "SELECT video_id, title, artist, position, jelly_status FROM playlist_items WHERE playlist_id = ?1",
+            )
             .unwrap();
 
         let rows = stmt
             .query_map([playlist_id], |row| {
                 Ok(PlaylistItem {
-                    video_id: row.get(0)?,
-                    title: row.get(1)?,
-                    artist: row.get(2)?,
+                    video_id: row.get("video_id")?,
+                    title: row.get("title")?,
+                    artist: row.get("artist")?,
+                    position: row.get("position")?,
+                    jelly_status: JellyStatus::try_from(row.get::<_, i64>("jelly_status")?)
+                        .unwrap(),
                 })
             })
             .unwrap()
@@ -201,7 +273,7 @@ impl DbState {
             .unwrap();
 
         let mut stmt = conn.prepare(
-            "INSERT INTO playlist_items (playlist_id, video_id, title, artist) VALUES (?1, ?2, ?3, ?4)").unwrap();
+            "INSERT INTO playlist_items (playlist_id, video_id, title, artist, position) VALUES (?1, ?2, ?3, ?4, ?5)").unwrap();
 
         for item in &playlist.items {
             stmt.execute((
@@ -209,6 +281,7 @@ impl DbState {
                 &item.video_id,
                 &item.title,
                 &item.artist,
+                &item.position,
             ))
             .unwrap();
         }
@@ -216,7 +289,11 @@ impl DbState {
         tx.commit().unwrap();
     }
 
-    pub fn update_playlist_fetch_time(&self, playlist_id: &str, fetch_time: DateTime<Utc>) {
+    pub fn update_playlist_fetch_time(
+        &self,
+        playlist_id: &YoutubePlaylistId,
+        fetch_time: DateTime<Utc>,
+    ) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE playlists SET fetch_time = ?1 WHERE playlist_id = ?2",
@@ -247,23 +324,25 @@ impl DbState {
 
     // FILESYSTEM
 
-    pub fn get_track_query_override(&self, video_id: &str) -> Option<String> {
-        self.single(
+    pub fn get_track_query_override(&self, video_id: &YoutubeVideoId) -> Option<String> {
+        self.single::<Option<String>, _>(
             "SELECT override_query FROM status WHERE video_id = ?1",
-            [video_id],
+            (video_id,),
         )
+        .flatten()
     }
 
-    pub fn get_track_result_override(&self, video_id: &str) -> Option<String> {
-        self.single(
+    pub fn get_track_result_override(&self, video_id: &YoutubeVideoId) -> Option<String> {
+        self.single::<Option<String>, _>(
             "SELECT override_result FROM status WHERE video_id = ?1",
-            [video_id],
+            (video_id,),
         )
+        .flatten()
     }
 
     pub fn modify_video_status<F: Fn(&mut VideoStatus) -> bool>(
         &self,
-        video_id: &str,
+        video_id: &YoutubeVideoId,
         modify: F,
     ) -> Option<VideoStatus> {
         if let Some(mut video) = Self::get_video(self, video_id) {
@@ -290,31 +369,31 @@ impl DbState {
         rows.collect()
     }
 
-    pub fn get_all_ids(&self) -> Vec<String> {
+    pub fn get_all_ids(&self) -> Vec<YoutubeVideoId> {
         self.all("SELECT video_id FROM status", [])
     }
 
-    pub fn get_video_fetch_status(&self, video_id: &str) -> Option<FetchStatus> {
+    pub fn get_video_fetch_status(&self, video_id: &YoutubeVideoId) -> Option<FetchStatus> {
         self.single::<i64, _>(
             "SELECT fetch_status FROM status WHERE video_id = ?1",
-            &[video_id],
+            [video_id],
         )
         .and_then(|s| FetchStatus::try_from(s).ok())
     }
 
-    pub fn get_all_unprocessed_ids(&self) -> Vec<String> {
+    pub fn get_all_unprocessed_ids(&self) -> Vec<YoutubeVideoId> {
         self.all(
             "SELECT video_id FROM status WHERE fetch_status IN (0, 1)",
             [],
         )
     }
 
-    pub fn get_video(&self, video_id: &str) -> Option<VideoStatus> {
+    pub fn get_video(&self, video_id: &YoutubeVideoId) -> Option<VideoStatus> {
         let conn = self.conn.lock().unwrap();
         Self::get_video_internal(&conn, video_id)
     }
 
-    fn get_video_internal(conn: &Connection, video_id: &str) -> Option<VideoStatus> {
+    fn get_video_internal(conn: &Connection, video_id: &YoutubeVideoId) -> Option<VideoStatus> {
         conn.query_row_and_then(
             "SELECT * FROM status WHERE video_id = ?1",
             [video_id],
@@ -342,6 +421,7 @@ impl DbState {
             override_result: row
                 .get::<_, Option<String>>("override_result")?
                 .map(|s| serde_json::from_str(&s).unwrap()),
+            jelly_id: row.get("jelly_id")?,
         })
     }
 
@@ -353,10 +433,10 @@ impl DbState {
     fn set_full_track_status_internal(conn: &Connection, status: &VideoStatus) {
         conn
             .execute(
-                "INSERT INTO status (video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result, last_error)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "INSERT INTO status (video_id, last_update, fetch_time, fetch_status, last_query, last_result, override_query, override_result, last_error, jelly_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(video_id)
-                 DO UPDATE SET last_update = ?2, fetch_time = ?3, fetch_status = ?4, last_query = ?5, last_result = ?6, override_query = ?7, override_result = ?8, last_error = ?9",
+                 DO UPDATE SET last_update = ?2, fetch_time = ?3, fetch_status = ?4, last_query = ?5, last_result = ?6, override_query = ?7, override_result = ?8, last_error = ?9, jelly_id = ?10",
                 (
                     &status.video_id,
                     status.last_update,
@@ -367,6 +447,7 @@ impl DbState {
                     status.override_query.as_ref().map(|q| serde_json::to_string(q).unwrap()),
                     status.override_result.as_ref().map(|r| serde_json::to_string(r).unwrap()),
                     status.last_error.as_ref(),
+                    status.jelly_id.as_ref()
                 )
             )
             .unwrap();
@@ -391,11 +472,9 @@ impl DbState {
 
     pub fn try_get_brainz(&self, query: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT data FROM brainz WHERE query = ?1",
-            [query],
-            |row| row.get::<_, Option<String>>(0),
-        )
+        conn.query_row("SELECT data FROM brainz WHERE query = ?1", [query], |row| {
+            row.get::<_, Option<String>>(0)
+        })
         .get_single_row()?
     }
 
@@ -408,13 +487,116 @@ impl DbState {
             .unwrap();
     }
 
+    // Jellyfin
+
+    pub fn get_jellyfin_unsynced(&self, has_jid: Option<bool>) -> Vec<JellySyncStatus> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut query: String = r#"
+            SELECT i.playlist_id, i.jelly_status, i.video_id, s.fetch_status, s.jelly_id
+            FROM playlist_config p
+            LEFT JOIN playlist_items i on p.playlist_id  = i.playlist_id 
+            LEFT JOIN status s on s.video_id = i.video_id
+            WHERE p.enabled <> 0 
+            AND p.jelly_playlist_id IS NOT NULL
+            AND i.jelly_status <> 1
+            AND s.fetch_status = 4
+            "#
+        .into();
+
+        if let Some(has_jid) = has_jid {
+            query.push_str(if has_jid {
+                " AND s.jelly_id IS NOT NULL"
+            } else {
+                " AND s.jelly_id IS NULL"
+            });
+        }
+
+        let mut stmt = conn.prepare(&query).unwrap();
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(JellySyncStatus {
+                    playlist_id: row.get("playlist_id")?,
+                    video_id: row.get("video_id")?,
+                    fetch_status: FetchStatus::try_from(row.get::<_, i64>("fetch_status")?)
+                        .unwrap(),
+                    jelly_status: JellyStatus::try_from(row.get::<_, i64>("jelly_status")?)
+                        .unwrap(),
+                    jelly_id: row.get("jelly_id")?,
+                })
+            })
+            .unwrap()
+            .map(|r| r.unwrap());
+
+        rows.collect()
+    }
+
+    pub fn get_jellyfin_playlist_item_ids(
+        &self,
+        youtube_playlist_id: &YoutubePlaylistId,
+    ) -> Vec<String> {
+        self.all(
+            r#"
+            SELECT s.jelly_id
+            FROM playlist_items i
+            LEFT JOIN status s on s.video_id = i.video_id
+            WHERE i.playlist_id = ?1
+            AND s.jelly_id IS NOT NULL
+            ORDER BY i.position ASC
+            "#,
+            (youtube_playlist_id,),
+        )
+    }
+
+    pub fn set_jellyfin_items_to_synced(&self, youtube_playlist_id: &YoutubePlaylistId) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            r#"
+            UPDATE playlist_items
+            SET jelly_status = 1
+            FROM status WHERE status.video_id = playlist_items.video_id
+            AND playlist_id = ?1
+            AND jelly_id IS NOT NULL
+            "#,
+            (youtube_playlist_id,),
+        )
+        .unwrap();
+    }
+
+    pub fn set_jellyfin_id(&self, video_id: &YoutubeVideoId, jelly_id: &JellyItemId) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let count = conn
+            .execute(
+                "UPDATE status SET jelly_id = ?1 WHERE video_id = ?2",
+                (jelly_id, video_id),
+            )
+            .unwrap();
+        count > 0
+    }
+
     // User
 
     pub fn get_user(&self, username: &str) -> Option<UserData> {
         self.single(
             "SELECT username, password FROM users WHERE username = ?1",
-            [username],
+            (username,),
         )
+    }
+
+    pub fn add_user(&self, username: &str, hashed_password: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (username, password) VALUES (?1, ?2)",
+            (username, hashed_password),
+        )
+        .unwrap();
+    }
+
+    pub fn delete_user(&self, username: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM users WHERE username = ?1", (username,))
+            .unwrap()
     }
 
     pub fn get_key(&self, key: &str) -> Option<String> {
@@ -423,6 +605,19 @@ impl DbState {
 
     pub fn set_key(&self, key: &str, value: &str) {
         let conn = self.conn.lock().unwrap();
+        self.set_key_with_con(&conn, key, value);
+    }
+
+    pub fn delete_key(&self, key: &str) -> Option<String> {
+        self.single("DELETE FROM kvp WHERE key = ?1", [key])
+    }
+
+    pub fn set_key_with_con(
+        &self,
+        conn: &std::sync::MutexGuard<'_, Connection>,
+        key: &str,
+        value: &str,
+    ) {
         conn
             .execute(
                 "INSERT INTO kvp (key, value, last_update) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = ?2, last_update = ?3",
@@ -443,7 +638,7 @@ impl DbState {
         }
     }
 
-    fn single<T: serde::de::DeserializeOwned, P: Params>(
+    fn single<T: serde::de::DeserializeOwned + Debug, P: Params>(
         &self,
         query: &str,
         params: P,
@@ -452,7 +647,7 @@ impl DbState {
         let mut stmt = conn.prepare(query).unwrap();
         let res = stmt.query(params).get_single_row()?;
         let mut rows = from_rows::<T>(res);
-        rows.next()?.ok()
+        rows.next().map(|row| row.unwrap())
     }
 }
 
@@ -471,6 +666,25 @@ impl<T> MyExtension<T> for rusqlite::Result<T> {
     }
 }
 
+trait ConnectionExt {
+    fn run(&self, query: &str);
+    fn run_all(&self, queries: &[&str]);
+}
+
+impl ConnectionExt for Connection {
+    fn run(&self, query: &str) {
+        self.execute(query, ()).unwrap();
+    }
+
+    fn run_all(&self, queries: &[&str]) {
+        let tx = self.unchecked_transaction().unwrap();
+        for query in queries {
+            self.execute(query, ()).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AuthData {
     pub access_token: String,
@@ -478,8 +692,94 @@ pub struct AuthData {
     pub expires_at: i64,
 }
 
+#[derive(Deserialize)]
+pub struct PlaylistConfig {
+    pub playlist_id: YoutubePlaylistId,
+    pub jelly_playlist_id: Option<JellyPlaylistId>,
+    pub enabled: bool,
+}
+
+macro_rules! ValueId {
+    ($type_name:ident) => {
+        #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+        #[serde(transparent)]
+        pub struct $type_name(String);
+
+        impl $type_name {
+            pub fn new(value: String) -> Self {
+                Self(value)
+            }
+        }
+
+        impl Display for $type_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+
+        impl ToSql for $type_name {
+            fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+                Ok(rusqlite::types::ToSqlOutput::from(self.0.clone()))
+            }
+        }
+
+        impl FromSql for $type_name {
+            fn column_result(
+                value: rusqlite::types::ValueRef<'_>,
+            ) -> rusqlite::types::FromSqlResult<Self> {
+                value.as_str().map(Into::into)
+            }
+        }
+
+        impl From<String> for $type_name {
+            fn from(value: String) -> Self {
+                Self::new(value)
+            }
+        }
+
+        impl From<&str> for $type_name {
+            fn from(value: &str) -> Self {
+                Self::new(value.to_string())
+            }
+        }
+
+        impl Borrow<str> for $type_name {
+            fn borrow(&self) -> &str {
+                self.0.borrow()
+            }
+        }
+
+        impl AsRef<str> for $type_name {
+            fn as_ref(&self) -> &str {
+                self.0.as_ref()
+            }
+        }
+
+        impl std::fmt::Debug for $type_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Debug::fmt(&self.0, f)
+            }
+        }
+    };
+}
+
+ValueId!(YoutubePlaylistId);
+ValueId!(YoutubeVideoId);
+ValueId!(JellyPlaylistId);
+ValueId!(JellyItemId);
+
+impl PlaylistConfig {
+    pub fn new(playlist_id: YoutubePlaylistId) -> Self {
+        Self {
+            playlist_id,
+            jelly_playlist_id: None,
+            enabled: true,
+        }
+    }
+}
+
 pub struct Playlist {
-    pub playlist_id: String,
+    pub playlist_id: YoutubePlaylistId,
     pub etag: String,
     pub total_results: u32,
     pub fetch_time: DateTime<Utc>,
@@ -488,9 +788,11 @@ pub struct Playlist {
 
 #[derive(Debug)]
 pub struct PlaylistItem {
-    pub video_id: String,
+    pub video_id: YoutubeVideoId,
     pub title: String,
     pub artist: String,
+    pub position: u32,
+    pub jelly_status: JellyStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Default)]
@@ -504,9 +806,24 @@ pub enum FetchStatus {
     Disabled,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct JellySyncStatus {
+    pub playlist_id: YoutubePlaylistId,
+    pub video_id: YoutubeVideoId,
+    pub fetch_status: FetchStatus,
+    pub jelly_status: JellyStatus,
+    pub jelly_id: Option<JellyItemId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Default)]
+pub enum JellyStatus {
+    #[default]
+    NotSynced = 0,
+    Synced,
+}
+
+#[derive(Deserialize, Serialize)]
 pub struct VideoStatus {
-    pub video_id: String,
+    pub video_id: YoutubeVideoId,
     pub fetch_time: u64,
     pub fetch_status: FetchStatus,
     pub last_update: u64,
@@ -515,9 +832,25 @@ pub struct VideoStatus {
     pub last_error: Option<String>,
     pub override_query: Option<BrainzMultiSearch>,
     pub override_result: Option<BrainzMetadata>,
+    pub jelly_id: Option<JellyItemId>,
 }
 
 impl VideoStatus {
+    pub fn new(video_id: YoutubeVideoId) -> Self {
+        Self {
+            video_id,
+            fetch_time: 0,
+            fetch_status: FetchStatus::NotFetched,
+            last_update: 0,
+            last_query: None,
+            last_result: None,
+            last_error: None,
+            override_query: None,
+            override_result: None,
+            jelly_id: None,
+        }
+    }
+
     pub fn update_now(&mut self) {
         self.last_update = Utc::now().timestamp() as u64;
     }
@@ -540,6 +873,18 @@ impl TryFrom<i64> for FetchStatus {
             3 => Ok(FetchStatus::BrainzError),
             4 => Ok(FetchStatus::Categorized),
             5 => Ok(FetchStatus::Disabled),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<i64> for JellyStatus {
+    type Error = ();
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(JellyStatus::NotSynced),
+            1 => Ok(JellyStatus::Synced),
             _ => Err(()),
         }
     }

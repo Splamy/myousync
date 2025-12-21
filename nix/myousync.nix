@@ -12,30 +12,33 @@ with lib; let
   cfg = config.services.myousync;
   settingsFormat = pkgs.formats.toml {};
   configOptions =
-    lib.recursiveUpdate {
-      scrape = {
-        playlists = cfg.playlists;
-        yt_dlp = yt-dlp;
-      };
-      web = {
-        port = cfg.port;
-        path = ui-default.outPath;
-      };
-      paths = {
-        music =
-          if cfg.paths.music != null
-          then cfg.paths.music
-          else "${cfg.dataDir}/music";
-        temp =
-          if cfg.paths.temp != null
-          then cfg.paths.temp
-          else "${cfg.dataDir}/temp";
+    lib.recursiveUpdate
+    (
+      lib.filterAttrsRecursive (n: v: v != null) {
+        scrape = {
+          playlists = cfg.playlists;
+          yt_dlp = yt-dlp;
+        };
+        web = {
+          port = cfg.port;
+          path = ui-default.outPath;
+        };
+        paths = {
+          music =
+            if cfg.paths.music != null
+            then cfg.paths.music
+            else "${cfg.dataDir}/music";
+          temp =
+            if cfg.paths.temp != null
+            then cfg.paths.temp
+            else "${cfg.dataDir}/temp";
 
-        file_permissions = cfg.filePermissions;
-        dir_permissions = cfg.dirPermissions;
-      };
-      youtube = {};
-    }
+          file_permissions = cfg.filePermissions;
+          dir_permissions = cfg.dirPermissions;
+        };
+        youtube = {};
+      }
+    )
     cfg.settings;
   configFile = settingsFormat.generate "myousync.toml" configOptions;
 in {
@@ -132,8 +135,8 @@ in {
     };
 
     filePermissions = mkOption {
-      type = types.str;
-      default = "664";
+      type = types.nullOr types.str;
+      default = null;
       example = "664";
       description = ''
         Unix Permissions in octal for the music files.
@@ -141,8 +144,8 @@ in {
     };
 
     dirPermissions = mkOption {
-      type = types.str;
-      default = "0775";
+      type = types.nullOr types.str;
+      default = null;
       example = "0775";
       description = ''
         Unix Permissions in octal for the artist/album folders the music files will be placed in.
