@@ -3,7 +3,9 @@
     clippy::collapsible_if,
     clippy::too_many_lines,
     clippy::cognitive_complexity,
-    clippy::redundant_closure_for_method_calls
+    clippy::redundant_closure_for_method_calls,
+    clippy::missing_panics_doc,
+    clippy::significant_drop_tightening
 )]
 
 mod auth;
@@ -16,6 +18,16 @@ mod net;
 mod util;
 mod yt_api;
 mod ytdlp;
+
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    fs::Permissions,
+    future::Future,
+    path::PathBuf,
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration, SystemTime},
+};
 
 use anyhow::anyhow;
 use axum::{
@@ -30,33 +42,20 @@ use axum::{
     response::IntoResponse,
 };
 use brainz::{BrainzMetadata, BrainzMultiSearch};
-use chrono::Utc;
-use dbdata::{FetchStatus, VideoStatus};
+use dbdata::{FetchStatus, VideoStatus, YoutubeVideoId};
 use duration_str::deserialize_duration;
 use log::{debug, error, info, warn};
+use minicli::{CliResult, process_args};
 use musicfiles::MetadataTags;
 use reqwest::Method;
 use serde::Deserialize;
-use std::{
-    collections::HashSet,
-    env,
-    fs::Permissions,
-    future::Future,
-    path::PathBuf,
-    sync::{Arc, LazyLock, Mutex},
-    time::Duration,
-};
 use tokio::sync::broadcast::Sender;
 use tower_http::{
     cors::CorsLayer,
     services::{ServeDir, ServeFile},
 };
+use util::limiter::Limiter;
 use ytdlp::YtDlpResponse;
-
-use crate::{
-    dbdata::YoutubeVideoId,
-    minicli::{CliResult, process_args},
-};
 
 static NOTIFY_MUSIC_UPDATE: LazyLock<Sender<String>> =
     LazyLock::new(|| tokio::sync::broadcast::channel::<String>(100).0);
@@ -96,10 +95,10 @@ async fn main() {
     }
 
     tokio::select! {
-        _ = run_server(&s) => {},
-        _ = playlist_sync_loop(&s) => {},
-        _ = music_tag_loop(&s) => {},
-        _ = jellyfin_sync_loop(&s) => {},
+        () = run_server(&s) => {},
+        () = playlist_sync_loop(&s) => {},
+        () = music_tag_loop(&s) => {},
+        () = jellyfin_sync_loop(&s) => {},
     }
 }
 
@@ -404,12 +403,12 @@ async fn sync_all(s: &MsState) {
     let playlist_configs = dbdata::DB.get_playlist_config();
     let all_ids = dbdata::DB.get_all_ids().into_iter().collect::<HashSet<_>>();
 
-    for playlist_config in playlist_configs.iter() {
+    for playlist_config in &playlist_configs {
         let playlist_id = &playlist_config.playlist_id;
         info!("Syncing {playlist_id}");
-        match yt_api::get_playlist(&s.config, playlist_id).await {
+        match yt_api::get_playlist(s.config, playlist_id).await {
             Ok(playlist) => {
-                for item in playlist.items.iter() {
+                for item in &playlist.items {
                     if all_ids.contains(&item.video_id) {
                         continue;
                     }
@@ -444,7 +443,7 @@ async fn sync_playlist_item(s: &MsState, video_id: &YoutubeVideoId) -> anyhow::R
     let dlp_file: YtDlpResponse = match status.fetch_status {
         FetchStatus::NotFetched => match ytdlp::get(s, &status.video_id).await {
             Ok(dlp_file) => {
-                status.fetch_time = Utc::now().timestamp() as u64;
+                status.fetch_time = Some(SystemTime::now().into());
                 MsState::push_update_state(&mut status, FetchStatus::Fetched);
                 dlp_file
             }
@@ -703,24 +702,35 @@ impl MsPaths {
 
 #[derive(Clone)]
 pub struct MsState {
-    pub config: Arc<MsConfig>,
+    pub config: &'static MsConfig,
+    pub limiters: &'static Limiters,
     pub file_cache: Arc<Mutex<FileCache>>,
 }
 
+pub struct Limiters {
+    youtube: Limiter,
+}
+
 pub struct FileCache {
-    lookup: std::collections::HashMap<YoutubeVideoId, PathBuf>,
+    lookup: HashMap<YoutubeVideoId, PathBuf>,
 }
 
 impl MsState {
     #[must_use]
     pub fn new(config_path: &std::path::Path) -> Self {
+        let config = MsConfig::read(config_path).unwrap_or_else(|_| {
+            panic!("Failed to read config at {}", config_path.to_string_lossy())
+        });
+        let limiters = Limiters {
+            youtube: Limiter::new(config.scrape.yt_dlp_rate),
+        };
+
         Self {
-            config: Arc::new(MsConfig::read(config_path).unwrap_or_else(|_| {
-                panic!("Failed to read config at {}", config_path.to_string_lossy())
-            })),
+            config: Box::leak::<'static>(Box::new(config)),
             file_cache: Arc::new(Mutex::new(FileCache {
-                lookup: std::collections::HashMap::new(),
+                lookup: HashMap::new(),
             })),
+            limiters: Box::leak::<'static>(Box::new(limiters)),
         }
     }
 

@@ -7,11 +7,8 @@ use tokio::process::Command;
 
 use crate::{
     MsState,
-    dbdata::{self, YoutubeVideoId},
-    util::limiter::Limiter,
+    dbdata::{DB, YoutubeVideoId},
 };
-
-static LIMITER: Limiter = Limiter::new(std::time::Duration::from_secs(10));
 
 #[derive(thiserror::Error, Debug)]
 pub enum YtDlpError {
@@ -31,9 +28,7 @@ pub async fn get(s: &MsState, video_id: &YoutubeVideoId) -> Result<YtDlpResponse
     }
 
     info!("Getting yt-dlp for: {video_id}");
-    LIMITER
-        .wait_for_next_fetch_of_time(s.config.scrape.yt_dlp_rate)
-        .await;
+    s.limiters.youtube.wait_for_next_fetch().await;
 
     let dlp_output = Command::new(&s.config.scrape.yt_dlp)
         .current_dir(s.config.paths.temp.as_path())
@@ -67,7 +62,7 @@ pub async fn get(s: &MsState, video_id: &YoutubeVideoId) -> Result<YtDlpResponse
     }
     let dlp_res = serde_json::to_string(&json)?;
 
-    dbdata::DB.set_yt_dlp(video_id, &dlp_res);
+    DB.set_yt_dlp(video_id, &dlp_res);
 
     let dlp_res: YtDlpResponse = serde_json::from_str(&dlp_res)?;
 
@@ -75,7 +70,7 @@ pub async fn get(s: &MsState, video_id: &YoutubeVideoId) -> Result<YtDlpResponse
 }
 
 pub fn try_get_metadata(video_id: &YoutubeVideoId) -> Option<YtDlpResponse> {
-    if let Some(dlp_res) = dbdata::DB.try_get_yt_dlp(video_id) {
+    if let Some(dlp_res) = DB.try_get_yt_dlp(video_id) {
         let ytdlp_data = serde_json::from_str(&dlp_res).unwrap();
         return Some(ytdlp_data);
     }
