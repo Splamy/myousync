@@ -1,6 +1,6 @@
 use crate::{
     auth,
-    dbdata::{self, PlaylistConfig},
+    dbdata::{DB, PlaylistConfig},
 };
 
 pub fn process_args() -> CliResult {
@@ -20,10 +20,10 @@ pub fn process_args() -> CliResult {
             };
 
             let hashed_pw = auth::hash_password(password);
-            dbdata::DB.add_user(user, &hashed_pw);
+            DB.add_user(user, &hashed_pw);
             println!("user {} added", user);
         } else if let Some((&"remove", _)) = args.split_first() {
-            let delete_count = dbdata::DB.delete_user(user);
+            let delete_count = DB.delete_user(user);
 
             if delete_count == 0 {
                 println!("Did not found any matching user for {}", user);
@@ -48,14 +48,14 @@ pub fn process_args() -> CliResult {
                 list_conf.jelly_playlist_id = Some((*jellyfin_playlist).into());
             }
 
-            dbdata::DB.add_playlist_config(&list_conf);
+            DB.add_playlist_config(&list_conf);
         } else if let Some((&"remove", args)) = args.split_first() {
             let Some((playlist_id, _)) = args.split_first() else {
                 return ret_error("missing <list_id>");
             };
-            dbdata::DB.delete_playlist_config(&(*playlist_id).into());
+            DB.delete_playlist_config(&(*playlist_id).into());
         } else if let Some((&"list", _)) = args.split_first() {
-            let lists = dbdata::DB.get_playlist_config();
+            let lists = DB.get_playlist_config();
             for list in lists {
                 println!(
                     "{} [{}] Jelly:{}",
@@ -64,7 +64,7 @@ pub fn process_args() -> CliResult {
                     list.jelly_playlist_id
                         .as_ref()
                         .map(|j| j.as_ref())
-                        .unwrap_or("❌️") 
+                        .unwrap_or("❌️")
                 );
             }
         }

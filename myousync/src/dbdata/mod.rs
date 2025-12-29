@@ -1,20 +1,18 @@
+mod models;
+mod sql_system_time;
+
 use std::{
-    borrow::Borrow,
-    fmt::{Debug, Display},
-    ops::Deref,
+    fmt::Debug,
     sync::{LazyLock, Mutex},
+    time::SystemTime,
 };
 
-use chrono::{DateTime, Utc};
-use log::{debug, info};
-use rusqlite::{Connection, Params, ToSql, types::FromSql};
-use serde::{Deserialize, Serialize};
+use log::info;
+use rusqlite::{Connection, Params};
 use serde_rusqlite::from_rows;
 
-use crate::{
-    brainz::{BrainzMetadata, BrainzMultiSearch},
-    jellyfin,
-};
+pub use models::*;
+pub use sql_system_time::SqlSystemTime;
 
 pub static DB: LazyLock<DbState> = LazyLock::new(|| DbState::new());
 const DB_VERSION: u32 = 2;
@@ -25,7 +23,11 @@ pub struct DbState {
 
 impl DbState {
     pub fn new() -> Self {
-        let conn = Connection::open("ytdata.db").unwrap();
+        Self::new_at("ytdata.db")
+    }
+
+    pub fn new_at(dbpath: &str) -> Self {
+        let conn = Connection::open(dbpath).unwrap();
 
         conn.execute_batch(
             "
@@ -95,32 +97,28 @@ impl DbState {
             conn: Mutex::new(conn),
         };
 
-        DbState::migrate(&state);
+        Self::migrate(&state);
 
         state
     }
 
-    fn migrate(state: &DbState) {
+    fn migrate(state: &Self) {
         let cur_ver: u32 = state
             .get_key("version")
-            .map(|v| v.parse().expect("Invalid version"))
-            .unwrap_or(DB_VERSION);
+            .map_or(DB_VERSION, |v| v.parse().expect("Invalid version"));
 
         if cur_ver >= DB_VERSION {
             return;
         }
 
-        info!(
-            "Upgrading database from version {} to {}",
-            cur_ver, DB_VERSION
-        );
+        info!("Upgrading database from version {cur_ver} to {DB_VERSION}",);
 
         let mut new_ver = cur_ver;
         if new_ver == 0 {
             new_ver = 1;
             let con = &state.conn.lock().unwrap();
             con.run("ALTER TABLE status ADD COLUMN last_error TEXT DEFAULT NULL");
-            state.set_key_with_con(con, "version", &new_ver.to_string());
+            Self::set_key_with_con(con, "version", &new_ver.to_string());
         }
         if new_ver == 1 {
             new_ver = 2;
@@ -134,7 +132,7 @@ impl DbState {
                 "ALTER TABLE users DROP COLUMN password",
                 "ALTER TABLE users ADD COLUMN password TEXT NOT NULL DEFAULT ''",
             ]);
-            state.set_key_with_con(con, "version", &new_ver.to_string());
+            Self::set_key_with_con(con, "version", &new_ver.to_string());
         }
 
         info!("Database upgrade complete");
@@ -182,11 +180,11 @@ impl DbState {
 
     pub fn add_playlist_config(&self, playlist_config: &PlaylistConfig) {
         let conn = self.conn.lock().unwrap();
-        let query = r#"INSERT INTO playlist_config (playlist_id, jelly_playlist_id, enabled) 
+        let query = "INSERT INTO playlist_config (playlist_id, jelly_playlist_id, enabled) 
                VALUES (?1, ?2, ?3) 
-               ON CONFLICT(playlist_id) DO UPDATE SET jelly_playlist_id = ?2, enabled = ?3"#;
+               ON CONFLICT(playlist_id) DO UPDATE SET jelly_playlist_id = ?2, enabled = ?3";
         conn.execute(
-            &query,
+            query,
             (
                 &playlist_config.playlist_id,
                 &playlist_config.jelly_playlist_id,
@@ -218,7 +216,7 @@ impl DbState {
                         playlist_id: row.get(0)?,
                         etag: row.get(1)?,
                         total_results: row.get(2)?,
-                        fetch_time: DateTime::from_timestamp(row.get(3)?, 0).unwrap(),
+                        fetch_time: row.get(3)?,
                         items: vec![],
                     })
                 },
@@ -238,8 +236,7 @@ impl DbState {
                     title: row.get("title")?,
                     artist: row.get("artist")?,
                     position: row.get("position")?,
-                    jelly_status: JellyStatus::try_from(row.get::<_, i64>("jelly_status")?)
-                        .unwrap(),
+                    jelly_status: row.get("jelly_status")?,
                 })
             })
             .unwrap()
@@ -267,7 +264,7 @@ impl DbState {
                     &playlist.playlist_id,
                     &playlist.etag,
                     playlist.total_results,
-                    playlist.fetch_time.timestamp(),
+                    playlist.fetch_time,
                 ),
             )
             .unwrap();
@@ -292,12 +289,12 @@ impl DbState {
     pub fn update_playlist_fetch_time(
         &self,
         playlist_id: &YoutubePlaylistId,
-        fetch_time: DateTime<Utc>,
+        fetch_time: SystemTime,
     ) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE playlists SET fetch_time = ?1 WHERE playlist_id = ?2",
-            (fetch_time.timestamp(), playlist_id),
+            (SqlSystemTime(fetch_time), playlist_id),
         )
         .unwrap();
     }
@@ -406,7 +403,7 @@ impl DbState {
         Ok(VideoStatus {
             video_id: row.get("video_id")?,
             fetch_time: row.get("fetch_time")?,
-            fetch_status: FetchStatus::try_from(row.get::<_, i64>("fetch_status")?).unwrap(),
+            fetch_status: row.get("fetch_status")?,
             last_update: row.get("last_update")?,
             last_query: row
                 .get::<_, Option<String>>("last_query")?
@@ -427,7 +424,7 @@ impl DbState {
 
     pub fn set_full_track_status(&self, status: &VideoStatus) {
         let conn = self.conn.lock().unwrap();
-        Self::set_full_track_status_internal(&conn, status)
+        Self::set_full_track_status_internal(&conn, status);
     }
 
     fn set_full_track_status_internal(conn: &Connection, status: &VideoStatus) {
@@ -441,7 +438,7 @@ impl DbState {
                     &status.video_id,
                     status.last_update,
                     status.fetch_time,
-                    status.fetch_status as i64,
+                    status.fetch_status,
                     status.last_query.as_ref().map(|q| serde_json::to_string(q).unwrap()),
                     status.last_result.as_ref().map(|r| serde_json::to_string(r).unwrap()),
                     status.override_query.as_ref().map(|q| serde_json::to_string(q).unwrap()),
@@ -483,7 +480,7 @@ impl DbState {
         conn
             .execute(
                 "INSERT INTO brainz (query, fetch_time, data) VALUES (?1, ?2, ?3) ON CONFLICT(query) DO UPDATE SET fetch_time = ?2, data = ?3",
-                (&query, Utc::now().timestamp(), &data))
+                (&query, SqlSystemTime::now(), &data))
             .unwrap();
     }
 
@@ -492,7 +489,7 @@ impl DbState {
     pub fn get_jellyfin_unsynced(&self, has_jid: Option<bool>) -> Vec<JellySyncStatus> {
         let conn = self.conn.lock().unwrap();
 
-        let mut query: String = r#"
+        let mut query: String = "
             SELECT i.playlist_id, i.jelly_status, i.video_id, s.fetch_status, s.jelly_id
             FROM playlist_config p
             LEFT JOIN playlist_items i on p.playlist_id  = i.playlist_id 
@@ -501,7 +498,7 @@ impl DbState {
             AND p.jelly_playlist_id IS NOT NULL
             AND i.jelly_status <> 1
             AND s.fetch_status = 4
-            "#
+            "
         .into();
 
         if let Some(has_jid) = has_jid {
@@ -519,10 +516,8 @@ impl DbState {
                 Ok(JellySyncStatus {
                     playlist_id: row.get("playlist_id")?,
                     video_id: row.get("video_id")?,
-                    fetch_status: FetchStatus::try_from(row.get::<_, i64>("fetch_status")?)
-                        .unwrap(),
-                    jelly_status: JellyStatus::try_from(row.get::<_, i64>("jelly_status")?)
-                        .unwrap(),
+                    fetch_status: row.get("fetch_status")?,
+                    jelly_status: row.get("jelly_status")?,
                     jelly_id: row.get("jelly_id")?,
                 })
             })
@@ -537,14 +532,14 @@ impl DbState {
         youtube_playlist_id: &YoutubePlaylistId,
     ) -> Vec<String> {
         self.all(
-            r#"
+            "
             SELECT s.jelly_id
             FROM playlist_items i
             LEFT JOIN status s on s.video_id = i.video_id
             WHERE i.playlist_id = ?1
             AND s.jelly_id IS NOT NULL
             ORDER BY i.position ASC
-            "#,
+            ",
             (youtube_playlist_id,),
         )
     }
@@ -552,13 +547,13 @@ impl DbState {
     pub fn set_jellyfin_items_to_synced(&self, youtube_playlist_id: &YoutubePlaylistId) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            r#"
+            "
             UPDATE playlist_items
             SET jelly_status = 1
             FROM status WHERE status.video_id = playlist_items.video_id
             AND playlist_id = ?1
             AND jelly_id IS NOT NULL
-            "#,
+            ",
             (youtube_playlist_id,),
         )
         .unwrap();
@@ -605,23 +600,18 @@ impl DbState {
 
     pub fn set_key(&self, key: &str, value: &str) {
         let conn = self.conn.lock().unwrap();
-        self.set_key_with_con(&conn, key, value);
+        Self::set_key_with_con(&conn, key, value);
     }
 
     pub fn delete_key(&self, key: &str) -> Option<String> {
         self.single("DELETE FROM kvp WHERE key = ?1", [key])
     }
 
-    pub fn set_key_with_con(
-        &self,
-        conn: &std::sync::MutexGuard<'_, Connection>,
-        key: &str,
-        value: &str,
-    ) {
+    pub fn set_key_with_con(conn: &std::sync::MutexGuard<'_, Connection>, key: &str, value: &str) {
         conn
             .execute(
                 "INSERT INTO kvp (key, value, last_update) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = ?2, last_update = ?3",
-                (&key, &value, Utc::now().timestamp()))
+                (&key, &value, SqlSystemTime::now()))
             .unwrap();
     }
 
@@ -685,213 +675,33 @@ impl ConnectionExt for Connection {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct AuthData {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: i64,
-}
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::dbdata::sql_system_time::SqlSystemTime;
 
-#[derive(Deserialize)]
-pub struct PlaylistConfig {
-    pub playlist_id: YoutubePlaylistId,
-    pub jelly_playlist_id: Option<JellyPlaylistId>,
-    pub enabled: bool,
-}
-
-macro_rules! ValueId {
-    ($type_name:ident) => {
-        #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
-        #[serde(transparent)]
-        pub struct $type_name(String);
-
-        impl $type_name {
-            pub fn new(value: String) -> Self {
-                Self(value)
-            }
-        }
-
-        impl Display for $type_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Display::fmt(&self.0, f)
-            }
-        }
-
-        impl ToSql for $type_name {
-            fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-                Ok(rusqlite::types::ToSqlOutput::from(self.0.clone()))
-            }
-        }
-
-        impl FromSql for $type_name {
-            fn column_result(
-                value: rusqlite::types::ValueRef<'_>,
-            ) -> rusqlite::types::FromSqlResult<Self> {
-                value.as_str().map(Into::into)
-            }
-        }
-
-        impl From<String> for $type_name {
-            fn from(value: String) -> Self {
-                Self::new(value)
-            }
-        }
-
-        impl From<&str> for $type_name {
-            fn from(value: &str) -> Self {
-                Self::new(value.to_string())
-            }
-        }
-
-        impl Borrow<str> for $type_name {
-            fn borrow(&self) -> &str {
-                self.0.borrow()
-            }
-        }
-
-        impl AsRef<str> for $type_name {
-            fn as_ref(&self) -> &str {
-                self.0.as_ref()
-            }
-        }
-
-        impl std::fmt::Debug for $type_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Debug::fmt(&self.0, f)
-            }
-        }
-    };
-}
-
-ValueId!(YoutubePlaylistId);
-ValueId!(YoutubeVideoId);
-ValueId!(JellyPlaylistId);
-ValueId!(JellyItemId);
-
-impl PlaylistConfig {
-    pub fn new(playlist_id: YoutubePlaylistId) -> Self {
-        Self {
-            playlist_id,
-            jelly_playlist_id: None,
-            enabled: true,
-        }
-    }
-}
-
-pub struct Playlist {
-    pub playlist_id: YoutubePlaylistId,
-    pub etag: String,
-    pub total_results: u32,
-    pub fetch_time: DateTime<Utc>,
-    pub items: Vec<PlaylistItem>,
-}
-
-#[derive(Debug)]
-pub struct PlaylistItem {
-    pub video_id: YoutubeVideoId,
-    pub title: String,
-    pub artist: String,
-    pub position: u32,
-    pub jelly_status: JellyStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Default)]
-pub enum FetchStatus {
-    #[default]
-    NotFetched = 0,
-    Fetched,
-    FetchError,
-    BrainzError,
-    Categorized,
-    Disabled,
-}
-
-pub struct JellySyncStatus {
-    pub playlist_id: YoutubePlaylistId,
-    pub video_id: YoutubeVideoId,
-    pub fetch_status: FetchStatus,
-    pub jelly_status: JellyStatus,
-    pub jelly_id: Option<JellyItemId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize, Default)]
-pub enum JellyStatus {
-    #[default]
-    NotSynced = 0,
-    Synced,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct VideoStatus {
-    pub video_id: YoutubeVideoId,
-    pub fetch_time: u64,
-    pub fetch_status: FetchStatus,
-    pub last_update: u64,
-    pub last_query: Option<BrainzMultiSearch>,
-    pub last_result: Option<BrainzMetadata>,
-    pub last_error: Option<String>,
-    pub override_query: Option<BrainzMultiSearch>,
-    pub override_result: Option<BrainzMetadata>,
-    pub jelly_id: Option<JellyItemId>,
-}
-
-impl VideoStatus {
-    pub fn new(video_id: YoutubeVideoId) -> Self {
-        Self {
-            video_id,
-            fetch_time: 0,
-            fetch_status: FetchStatus::NotFetched,
-            last_update: 0,
-            last_query: None,
-            last_result: None,
-            last_error: None,
-            override_query: None,
-            override_result: None,
-            jelly_id: None,
-        }
+    #[test]
+    fn test_read_write_kvp() {
+        let db = DbState::new_at(":memory:");
+        db.set_key("hi", "ho");
+        let res = db.get_key("hi");
+        assert_eq!(res, Some("ho".to_string()));
     }
 
-    pub fn update_now(&mut self) {
-        self.last_update = Utc::now().timestamp() as u64;
+    #[test]
+    fn test_read_write_auth_data() {
+        let db = DbState::new_at(":memory:");
+        let now = SqlSystemTime::now_rounded();
+
+        let data = AuthData {
+            access_token: "a".to_string(),
+            refresh_token: "b".to_string(),
+            expires_at: now,
+        };
+
+        db.set_auth(&data);
+
+        let read_data = db.try_get_auth().expect("Auth got missing");
+        assert_eq!(*data.expires_at, *read_data.expires_at);
     }
-
-    pub fn is_downloaded(&self) -> bool {
-        self.fetch_status != FetchStatus::NotFetched
-            && self.fetch_status != FetchStatus::FetchError
-            && self.fetch_status != FetchStatus::Disabled
-    }
-}
-
-impl TryFrom<i64> for FetchStatus {
-    type Error = ();
-
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(FetchStatus::NotFetched),
-            1 => Ok(FetchStatus::Fetched),
-            2 => Ok(FetchStatus::FetchError),
-            3 => Ok(FetchStatus::BrainzError),
-            4 => Ok(FetchStatus::Categorized),
-            5 => Ok(FetchStatus::Disabled),
-            _ => Err(()),
-        }
-    }
-}
-
-impl TryFrom<i64> for JellyStatus {
-    type Error = ();
-
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(JellyStatus::NotSynced),
-            1 => Ok(JellyStatus::Synced),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct UserData {
-    pub username: String,
-    pub password: String,
 }

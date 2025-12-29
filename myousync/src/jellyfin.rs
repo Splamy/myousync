@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use crate::dbdata::{JellyItemId, JellyPlaylistId, YoutubePlaylistId};
-use crate::net::CLIENT;
-use crate::{MsJellyfin, MsState, dbdata, musicfiles};
+use crate::{
+    MsJellyfin, MsState,
+    dbdata::{DB, JellyItemId, JellyPlaylistId, YoutubePlaylistId},
+    musicfiles,
+    net::CLIENT,
+};
 use gethostname::gethostname;
 use log::{debug, error, info, warn};
 use reqwest::StatusCode;
@@ -35,7 +38,7 @@ pub async fn sync_all(s: &MsState) {
         }
     };
 
-    let unsynced = dbdata::DB.get_jellyfin_unsynced(None);
+    let unsynced = DB.get_jellyfin_unsynced(None);
     if unsynced.is_empty() {
         debug!("Nothing to sync with jellyfin");
         return;
@@ -75,7 +78,7 @@ pub async fn sync_all(s: &MsState) {
             }
 
             if let Some(jelly_id) = sync_map.get(file_path.as_path()) {
-                dbdata::DB.set_jellyfin_id(&item.video_id, jelly_id);
+                DB.set_jellyfin_id(&item.video_id, jelly_id);
             } else {
                 debug!(
                     "Didn't find {} at {} yet",
@@ -92,7 +95,7 @@ pub async fn sync_all(s: &MsState) {
 
     debug!("Affected playlists: {check_playlists:?}");
 
-    let lists = dbdata::DB.get_playlist_config();
+    let lists = DB.get_playlist_config();
     for list in lists {
         if !list.enabled {
             debug!("Playlist {} not enabled", &list.playlist_id);
@@ -117,7 +120,7 @@ pub async fn sync_all(s: &MsState) {
             &list.playlist_id, &jelly_playlist_id
         );
 
-        let ordered_jelly_ids = dbdata::DB.get_jellyfin_playlist_item_ids(&list.playlist_id);
+        let ordered_jelly_ids = DB.get_jellyfin_playlist_item_ids(&list.playlist_id);
 
         let res = jellyfin_update_playlist(
             &jelly_ctx,
@@ -135,7 +138,7 @@ pub async fn sync_all(s: &MsState) {
             continue;
         }
 
-        dbdata::DB.set_jellyfin_items_to_synced(&list.playlist_id);
+        DB.set_jellyfin_items_to_synced(&list.playlist_id);
     }
 }
 
@@ -165,7 +168,7 @@ async fn login_jellyfin(jelly_config: &MsJellyfin) -> Result<JellyfinContext, Je
     }
     let response = request.json::<JellyfinAuthResponse>().await?;
 
-    dbdata::DB.set_key(JELLY_AUTH_KEY, &serde_json::to_string(&response).unwrap());
+    DB.set_key(JELLY_AUTH_KEY, &serde_json::to_string(&response).unwrap());
 
     let auth_header = get_auth_header(Some(&response));
 
@@ -173,7 +176,7 @@ async fn login_jellyfin(jelly_config: &MsJellyfin) -> Result<JellyfinContext, Je
 }
 
 async fn login_jellyfin_wit_existing_data(jelly_config: &MsJellyfin) -> Option<JellyfinContext> {
-    let existing_auth = dbdata::DB.get_key(JELLY_AUTH_KEY)?;
+    let existing_auth = DB.get_key(JELLY_AUTH_KEY)?;
     // TODO: unwrap nice
     let existing_auth = serde_json::from_str::<JellyfinAuthResponse>(&existing_auth).unwrap();
     let auth_header = get_auth_header(Some(&existing_auth));
@@ -191,7 +194,7 @@ async fn login_jellyfin_wit_existing_data(jelly_config: &MsJellyfin) -> Option<J
 
     if request.status() == StatusCode::UNAUTHORIZED {
         debug!("Old auth seems to have been invalidated, clearing cached data");
-        dbdata::DB.delete_key(JELLY_AUTH_KEY);
+        DB.delete_key(JELLY_AUTH_KEY);
         return None;
     } else if !request.status().is_success() {
         let response = request.text().await.ok()?;

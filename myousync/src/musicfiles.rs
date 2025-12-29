@@ -6,7 +6,7 @@ use std::{
 use crate::{
     FileCache, MsPaths, MsState,
     brainz::BrainzMetadata,
-    dbdata::{self, YoutubeVideoId},
+    dbdata::{DB, FetchStatus, YoutubeVideoId},
 };
 use anyhow::Context;
 use id3::TagLike;
@@ -64,11 +64,11 @@ pub fn find_local_file(
 ) -> Option<PathBuf> {
     if let Some(path) = cache.lookup.get(video_id) {
         if file_tag_matches(path, video_id) {
-            return Some(path.clone());
+            return Some(path.to_path_buf());
         }
     }
 
-    if dbdata::DB.get_video_fetch_status(video_id) == Some(dbdata::FetchStatus::Disabled) {
+    if DB.get_video_fetch_status(video_id) == Some(FetchStatus::Disabled) {
         return None;
     }
 
@@ -155,7 +155,7 @@ pub fn delete_file(s: &MsPaths, path: &Path, cache: &mut FileCache) -> anyhow::R
         return Err(anyhow::anyhow!("Not in music or temp directory"));
     }
     match std::fs::remove_file(path) {
-        Ok(_) => {
+        Ok(()) => {
             cache.lookup.retain(|_, v| v.as_path() != path);
             cleanup_directory(s, path);
             Ok(())
