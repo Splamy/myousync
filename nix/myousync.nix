@@ -92,8 +92,8 @@ in {
       description = ''
         To set the youtube auth data, point `environmentFile` at a file containing:
         ```
-        YOUTUBE_CLIENT_ID=your_id
-        YOUTUBE_CLIENT_SECRET=your_secret
+        MYOUSYNC__YOUTUBE__CLIENT_ID=your_id
+        MYOUSYNC__YOUTUBE__CLIENT_SECRET=your_secret
         ```
       '';
     };
@@ -103,14 +103,6 @@ in {
       default = {};
       description = ''
         The root myousync.toml configuration. Nix specific config will overwrite values in this.
-      '';
-    };
-
-    playlists = mkOption {
-      type = types.listOf types.str;
-      default = [];
-      description = ''
-        The youtube playlists to scrape. Add "LM" for the 'liked music' list.
       '';
     };
 
@@ -149,6 +141,26 @@ in {
       example = "0775";
       description = ''
         Unix Permissions in octal for the artist/album folders the music files will be placed in.
+      '';
+    };
+
+    jellyfin = mkOption {
+      type = types.submodule {
+        freeformType = settingsFormat.type;
+        options.music = mkOption {
+          type = types.nullOr types.path;
+          description = "The folder where the final tagged files will be stored";
+          default = null;
+        };
+        options.temp = mkOption {
+          type = types.nullOr types.path;
+          description = "The folder where songs will be downloaded to and held until tagged.";
+          default = null;
+        };
+      };
+      default = {};
+      description = ''
+        Syncronization to jellyfin
       '';
     };
   };
