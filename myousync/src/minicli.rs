@@ -21,14 +21,14 @@ pub fn process_args() -> CliResult {
 
             let hashed_pw = auth::hash_password(password);
             DB.add_user(user, &hashed_pw);
-            println!("user {} added", user);
+            println!("user {user} added");
         } else if let Some((&"remove", _)) = args.split_first() {
             let delete_count = DB.delete_user(user);
 
             if delete_count == 0 {
-                println!("Did not found any matching user for {}", user);
+                println!("Did not found any matching user for {user}");
             } else {
-                println!("Successfully deleted user {}", user);
+                println!("Successfully deleted user {user}");
             }
         }
     } else if let Some((&"run", args)) = args.split_first() {
@@ -36,14 +36,14 @@ pub fn process_args() -> CliResult {
             return ret_error("missing <config_path>");
         };
 
-        return CliResult::Continue(Some(config_path.to_string()));
+        return CliResult::Continue(Some((*config_path).to_string()));
     } else if let Some((&"lists", args)) = args.split_first() {
         if let Some((&"add", args)) = args.split_first() {
             let Some((playlist_id, _)) = args.split_first() else {
                 return ret_error("missing <list_id>");
             };
 
-            let mut list_conf = PlaylistConfig::new(playlist_id.to_string().into());
+            let mut list_conf = PlaylistConfig::new((*playlist_id).to_string().into());
             if let Some((jellyfin_playlist, _)) = args.split_first() {
                 list_conf.jelly_playlist_id = Some((*jellyfin_playlist).into());
             }
@@ -61,21 +61,19 @@ pub fn process_args() -> CliResult {
                     "{} [{}] Jelly:{}",
                     list.playlist_id,
                     if list.enabled { "✅️" } else { "❌️" },
-                    list.jelly_playlist_id
-                        .as_ref()
-                        .map(|j| j.as_ref())
-                        .unwrap_or("❌️")
+                    list.jelly_playlist_id.as_ref().map_or("❌️", |j| j.as_ref())
                 );
             }
         }
     } else {
-        println!("Invalid cli param {:?}", args);
+        println!("Invalid cli param {args:?}");
     }
-    return CliResult::Exit;
+
+    CliResult::Exit
 }
 
 fn ret_error(log: &str) -> CliResult {
-    println!("{}", log);
+    println!("{log}");
     CliResult::Exit
 }
 

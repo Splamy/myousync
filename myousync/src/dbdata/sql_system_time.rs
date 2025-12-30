@@ -3,7 +3,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use log::debug;
 use rusqlite::{
     ToSql,
     types::{FromSql, FromSqlResult, ToSqlOutput, ValueRef},

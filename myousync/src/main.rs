@@ -77,8 +77,8 @@ async fn main() {
 
     let config_path = PathBuf::from(
         config_path_opt
-            .or(env::var("MYOUSYNC_CONFIG_FILE").ok())
-            .unwrap_or("myousync.toml".into()),
+            .or_else(|| env::var("MYOUSYNC_CONFIG_FILE").ok())
+            .unwrap_or_else(|| "myousync.toml".into()),
     );
     let s = MsState::new(&config_path);
 
@@ -536,7 +536,7 @@ fn find_file(s: &MsState, video_id: &YoutubeVideoId, cache: &mut FileCache) -> O
     ytdlp::find_local_file(s, video_id).or_else(|| musicfiles::find_local_file(s, video_id, cache))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsConfig {
     pub paths: MsPaths,
     pub youtube: MsYoutube,
@@ -545,7 +545,7 @@ pub struct MsConfig {
     pub jellyfin: Option<MsJellyfin>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsPaths {
     pub music: PathBuf,
     pub temp: PathBuf,
@@ -563,15 +563,13 @@ pub struct MsPaths {
     pub dir_permissions: Option<Permissions>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsYoutube {
-    #[serde(default = "MsConfig::get_youtube_client_id_from_env")]
     pub client_id: String,
-    #[serde(default = "MsConfig::get_youtube_client_secret_from_env")]
     pub client_secret: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsWeb {
     #[serde(default = "MsConfig::default_port")]
     pub port: u16,
@@ -579,7 +577,7 @@ pub struct MsWeb {
     pub path: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsScrape {
     /// Min wait between requests to youtube-dl
     #[serde(deserialize_with = "deserialize_duration")]
@@ -598,16 +596,17 @@ pub struct MsScrape {
     pub yt_dlp: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsJellyfin {
     pub server: String,
     pub user: String,
     pub password: String,
     pub collection: String,
+    #[serde(default)]
     pub rewrite_path: Option<MsJellyfinRewrite>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MsJellyfinRewrite {
     pub from: String,
     pub to: String,
@@ -615,8 +614,11 @@ pub struct MsJellyfinRewrite {
 
 impl MsConfig {
     fn read(config_path: &std::path::Path) -> Result<Self, anyhow::Error> {
-        let config = std::fs::read_to_string(config_path)?;
-        Ok(toml::from_str::<Self>(&config)?)
+        let settings = config::Config::builder()
+            .add_source(config::File::with_name(config_path.to_str().unwrap()))
+            .add_source(config::Environment::with_prefix("MYOUSYNC").separator("__"))
+            .build()?;
+        Ok(settings.try_deserialize::<Self>()?)
     }
 
     const fn default_port() -> u16 {
@@ -641,14 +643,6 @@ impl MsConfig {
 
     const fn default_jellyfin_sync_rate() -> Duration {
         Duration::from_secs(60 * 10)
-    }
-
-    fn get_youtube_client_id_from_env() -> String {
-        env::var("YOUTUBE_CLIENT_ID").expect("youtube client id is not set")
-    }
-
-    fn get_youtube_client_secret_from_env() -> String {
-        env::var("YOUTUBE_CLIENT_SECRET").expect("youtube client secret is not set")
     }
 
     fn default_yt_dlp() -> String {

@@ -6,27 +6,26 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
-# chrono = "0.4.38"
-colog = "1.3.0"
-duration-str = "0.18.0"
-gethostname = "1.1.0"
-glob = "0.3.1"
+colog = "1.3"
+config = { version = "0.15", default-features = false, features = ["toml", "convert-case"] }
+duration-str = "0.18"
+gethostname = "1.1"
+glob = "0.3"
 id3 = "*"
-jsonwebtoken = "9.3"
-log = "0.4.26"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+log = "0.4"
 multitag = { path = "../multitag" }
-pbkdf2 = { version = "0.12.2", features = ["simple"] }
+pbkdf2 = { version = "0.12", features = ["simple"] }
 rand = { version = "0.9", features = ["std"] }
 regex = "1.11"
-reqwest = { version = "0.12.9", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
-sanitise-file-name = "1.0.0"
-serde = {version = "1.0.214", features = ["derive"] }
-serde_json = "1.0.132"
+sanitise-file-name = "1.0"
+serde = {version = "1", features = ["derive"] }
+serde_json = "1"
 serde_rusqlite = "0.40"
-thiserror = "2.0"
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-toml = "0.9"
 tower-http = { version = "0.6.2", features = ["fs", "cors"] }
-urlencoding = "2.1.3"
-walkdir = "2.5.0"
+urlencoding = "2.1"
+walkdir = "2.5"

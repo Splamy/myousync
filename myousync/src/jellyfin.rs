@@ -8,6 +8,7 @@ use crate::{
 };
 use gethostname::gethostname;
 use log::{debug, error, info, warn};
+use rand::distr::{Alphanumeric, SampleString};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -24,6 +25,7 @@ pub enum JellyError {
 }
 
 const JELLY_AUTH_KEY: &str = "jelly_auth";
+const JELLY_DEVICE_ID: &str = "jelly_device";
 
 pub async fn sync_all(s: &MsState) {
     let Some(jelly_config) = &s.config.jellyfin else {
@@ -177,8 +179,11 @@ async fn login_jellyfin(jelly_config: &MsJellyfin) -> Result<JellyfinContext, Je
 
 async fn login_jellyfin_wit_existing_data(jelly_config: &MsJellyfin) -> Option<JellyfinContext> {
     let existing_auth = DB.get_key(JELLY_AUTH_KEY)?;
-    // TODO: unwrap nice
-    let existing_auth = serde_json::from_str::<JellyfinAuthResponse>(&existing_auth).unwrap();
+    let Ok(existing_auth) = serde_json::from_str::<JellyfinAuthResponse>(&existing_auth) else {
+        debug!("Could not deserialize old jelly auth data");
+        DB.delete_key(JELLY_AUTH_KEY);
+        return None;
+    };
     let auth_header = get_auth_header(Some(&existing_auth));
 
     let url = format!("{}/Users/Me", jelly_config.server);
@@ -276,11 +281,17 @@ fn get_auth_header(auth_data: Option<&JellyfinAuthResponse>) -> String {
         .into_string()
         .unwrap_or_else(|_| "GenericMyousyncDevice".to_string());
 
+    let device_id = DB.get_key(JELLY_DEVICE_ID).unwrap_or_else(|| {
+        let device_id = Alphanumeric.sample_string(&mut rand::rng(), 32);
+        DB.set_key(JELLY_DEVICE_ID, &device_id);
+        device_id
+    });
+
     let mut params = vec![
         ("Client", "myousync"),
         ("Device", &hostname),
         ("Version", "1.0.0"),
-        ("DeviceId", "abc"),
+        ("DeviceId", &device_id),
     ];
 
     if let Some(auth_data) = auth_data {

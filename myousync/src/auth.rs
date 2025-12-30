@@ -20,12 +20,16 @@ use rand::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{dbdata, util};
+use crate::{
+    dbdata::{self, DB},
+    util,
+};
 use pbkdf2::{
     Pbkdf2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
 };
 
+const AUTH_SECRET_KEY: &str = "auth_server_secret";
 static SECRET: LazyLock<Box<str>> = LazyLock::new(|| get_server_secret().into_boxed_str());
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,9 +167,9 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
 }
 
 pub fn get_server_secret() -> String {
-    dbdata::DB.get_key("auth_server_secret").unwrap_or_else(|| {
+    DB.get_key(AUTH_SECRET_KEY).unwrap_or_else(|| {
         let secret = Alphanumeric.sample_string(&mut rand::rng(), 16);
-        dbdata::DB.set_key("auth_server_secret", &secret);
+        DB.set_key(AUTH_SECRET_KEY, &secret);
         secret
     })
 }

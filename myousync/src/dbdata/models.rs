@@ -148,13 +148,16 @@ pub struct PlaylistItem {
     pub title: String,
     pub artist: String,
     pub position: u32,
+    #[expect(dead_code)]
     pub jelly_status: JellyStatus,
 }
 
 pub struct JellySyncStatus {
     pub playlist_id: YoutubePlaylistId,
     pub video_id: YoutubeVideoId,
+    #[expect(dead_code)]
     pub fetch_status: FetchStatus,
+    #[expect(dead_code)]
     pub jelly_status: JellyStatus,
     pub jelly_id: Option<JellyItemId>,
 }
