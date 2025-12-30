@@ -1,27 +1,41 @@
-use std::sync::LazyLock;
+use std::{
+    sync::LazyLock,
+    time::{Duration, SystemTime},
+};
 
 use axum::{
+    Json,
     body::Body,
     extract::Request,
     http::{self, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
-use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
-use rand::distr::{Alphanumeric, SampleString};
+use log::info;
+use rand::{
+    Rng,
+    distr::{Alphanumeric, SampleString},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::dbdata;
+use crate::{
+    dbdata::{self, DB},
+    util,
+};
+use pbkdf2::{
+    Pbkdf2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
+};
 
+const AUTH_SECRET_KEY: &str = "auth_server_secret";
 static SECRET: LazyLock<Box<str>> = LazyLock::new(|| get_server_secret().into_boxed_str());
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub exp: usize,   // Expiry time of the token
-    pub iat: usize,   // Issued at time of the token
+    pub exp: u64,     // Expiry time of the token
+    pub iat: u64,     // Issued at time of the token
     pub user: String, // Email associated with the token
 }
 
@@ -34,34 +48,37 @@ pub struct SignInData {
 pub async fn sign_in(
     Json(user_data): Json<SignInData>, // JSON payload containing sign-in data
 ) -> Result<impl IntoResponse, AuthError> {
-    let user = match dbdata::DB.get_user(&user_data.username) {
-        Some(user) => user, // User found, proceed with authentication
-        None => {
-            return Err(AuthError {
-                message: "User not found".to_string(),
-                status_code: StatusCode::UNAUTHORIZED,
-            })
-        } // User not found, return unauthorized status
-    };
-    if user.password != user_data.password {
+    info!("Got login request for {}", &user_data.username);
+
+    let user = dbdata::DB
+        .get_user(&user_data.username)
+        // User not found, return unauthorized status
+        .ok_or_else(|| AuthError {
+            message: "User not found".to_string(),
+            status_code: StatusCode::UNAUTHORIZED,
+        })?;
+
+    if verify_password(&user.password, &user_data.password) {
         return Err(AuthError {
             message: "Invalid password".to_string(),
             status_code: StatusCode::UNAUTHORIZED,
         });
     }
-    let token = encode_jwt(user.username).map_err(|_| AuthError {
-        message: "Internal token error".to_string(),
-        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-    })?; // Handle JWT encoding errors
+    let token = encode_jwt(user.username)
+        // Handle JWT encoding errors
+        .map_err(|_| AuthError {
+            message: "Internal token error".to_string(),
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
     Ok(Json(token))
 }
 
 pub fn encode_jwt(email: String) -> Result<String, StatusCode> {
     let secret: String = SECRET.to_string();
-    let now = Utc::now();
-    let expire: chrono::TimeDelta = Duration::hours(24);
-    let exp: usize = (now + expire).timestamp() as usize;
-    let iat: usize = now.timestamp() as usize;
+    let now = SystemTime::now();
+    let expire: Duration = Duration::from_secs(24 * 60 * 60);
+    let exp = util::time::to_timestamp(now + expire);
+    let iat = util::time::to_timestamp(now);
     let claim = Claims {
         iat,
         exp,
@@ -87,6 +104,29 @@ pub fn decode_jwt(jwt_token: &str) -> Result<TokenData<Claims>, StatusCode> {
     result
 }
 
+pub fn hash_password(password: &str) -> String {
+    let mut rng = rand::rng();
+    let mut bytes = [0u8; Salt::RECOMMENDED_LENGTH];
+    rng.fill(&mut bytes);
+    let salt = SaltString::encode_b64(&bytes).unwrap();
+
+    let params = pbkdf2::Params {
+        rounds: 1000,
+        ..Default::default()
+    };
+    Pbkdf2
+        .hash_password_customized(password.as_bytes(), None, None, params, &salt)
+        .unwrap()
+        .to_string()
+}
+
+pub fn verify_password(stored: &str, password: &str) -> bool {
+    let parsed_hash = PasswordHash::new(stored).unwrap();
+    Pbkdf2
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
+}
+
 pub struct AuthError {
     pub message: String,
     pub status_code: StatusCode,
@@ -107,37 +147,29 @@ pub async fn auth(req: Request, next: Next) -> Result<Response, AuthError> {
             return Err(AuthError {
                 message: "Please add the JWT token to the header".to_string(),
                 status_code: StatusCode::FORBIDDEN,
-            })
+            });
         }
     };
     let mut header = auth_header.split_whitespace();
     let (_bearer, token) = (header.next(), header.next());
-    let token_data = match decode_jwt(token.unwrap()) {
-        Ok(data) => data,
-        Err(_) => {
-            return Err(AuthError {
-                message: "Unable to decode token".to_string(),
-                status_code: StatusCode::UNAUTHORIZED,
-            })
-        }
-    };
+    let token_data = decode_jwt(token.unwrap()).map_err(|_| AuthError {
+        message: "Unable to decode token".to_string(),
+        status_code: StatusCode::UNAUTHORIZED,
+    })?;
     // Fetch the user details from the database
-    let _current_user = match dbdata::DB.get_user(&token_data.claims.user) {
-        Some(user) => user,
-        None => {
-            return Err(AuthError {
-                message: "You are not an authorized user".to_string(),
-                status_code: StatusCode::UNAUTHORIZED,
-            })
-        }
-    };
+    let _current_user = dbdata::DB
+        .get_user(&token_data.claims.user)
+        .ok_or_else(|| AuthError {
+            message: "You are not an authorized user".to_string(),
+            status_code: StatusCode::UNAUTHORIZED,
+        })?;
     Ok(next.run(req).await)
 }
 
 pub fn get_server_secret() -> String {
-    dbdata::DB.get_key("auth_server_secret").unwrap_or_else(|| {
+    DB.get_key(AUTH_SECRET_KEY).unwrap_or_else(|| {
         let secret = Alphanumeric.sample_string(&mut rand::rng(), 16);
-        dbdata::DB.set_key("auth_server_secret", &secret);
+        DB.set_key(AUTH_SECRET_KEY, &secret);
         secret
     })
 }

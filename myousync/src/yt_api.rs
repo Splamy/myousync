@@ -1,14 +1,18 @@
-use std::{io, mem};
+use std::{
+    io, mem,
+    time::{Duration, SystemTime},
+};
 
-use crate::{net::CLIENT, MsConfig};
-use chrono::TimeDelta;
+use crate::{
+    MsConfig,
+    dbdata::{AuthData, DB, JellyStatus, Playlist, PlaylistItem, YoutubePlaylistId},
+    net::CLIENT,
+};
 use log::{debug, info};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::dbdata::{self, AuthData, Playlist, PlaylistItem};
-
-const PLAYLISTS_QUICK_CACHE_TIME: TimeDelta = chrono::Duration::minutes(1);
+const PLAYLISTS_QUICK_CACHE_TIME: Duration = Duration::from_secs(60);
 
 #[derive(Error, Debug)]
 pub enum YTError {
@@ -31,10 +35,10 @@ pub enum YTError {
 }
 
 pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
-    if let Some(data) = dbdata::DB.try_get_auth() {
+    if let Some(data) = DB.try_get_auth() {
         debug!("Found YT Auth");
 
-        if chrono::Utc::now().timestamp() < data.expires_at {
+        if SystemTime::now() < *data.expires_at {
             debug!("YT Auth is still valid");
             return Ok(data);
         }
@@ -63,11 +67,12 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
             YtTokenResponse::Success(token_data) => {
                 let new_data = AuthData {
                     access_token: token_data.access_token,
-                    expires_at: chrono::Utc::now().timestamp() + token_data.expires_in,
+                    expires_at: (SystemTime::now() + Duration::from_secs(token_data.expires_in))
+                        .into(),
                     refresh_token: data.refresh_token,
                 };
 
-                dbdata::DB.set_auth(&new_data);
+                DB.set_auth(&new_data);
 
                 return Ok(new_data);
             }
@@ -87,7 +92,7 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
         "https://www.googleapis.com/auth/youtube",
     ));
 
-    debug!("form_data: {}", form_data);
+    debug!("form_data: {form_data}");
 
     let code_response = CLIENT
         .post("https://oauth2.googleapis.com/device/code")
@@ -110,16 +115,11 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
     form_data.push_str(&urlencoding::encode(&code_response.device_code));
     form_data.push_str("&grant_type=urn:ietf:params:oauth:grant-type:device_code");
 
-    let timeout = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::seconds(code_response.expires_in))
-        .unwrap();
+    let timeout = SystemTime::now() + Duration::from_secs(code_response.expires_in);
 
-    while chrono::Utc::now() < timeout {
+    while SystemTime::now() < timeout {
         info!("Waiting for user to authorize");
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            code_response.interval as u64,
-        ))
-        .await;
+        tokio::time::sleep(Duration::from_secs(code_response.interval)).await;
 
         let token_response = CLIENT
             .post("https://oauth2.googleapis.com/token")
@@ -146,13 +146,14 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
             YtTokenResponse::Success(token_data) => {
                 let new_data = AuthData {
                     access_token: token_data.access_token,
-                    expires_at: chrono::Utc::now().timestamp() + token_data.expires_in,
+                    expires_at: (SystemTime::now() + Duration::from_secs(token_data.expires_in))
+                        .into(),
                     refresh_token: token_data
                         .refresh_token
                         .ok_or(YTError::MissingRefreshToken)?,
                 };
 
-                dbdata::DB.set_auth(&new_data);
+                DB.set_auth(&new_data);
 
                 return Ok(new_data);
             }
@@ -162,25 +163,29 @@ pub async fn get_auth(config: &MsConfig) -> Result<AuthData, YTError> {
     Err(YTError::AuthTimeExceeded)
 }
 
-pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playlist, YTError> {
-    let maybe_cached_playlist = dbdata::DB.try_get_playlist(playlist_id);
+pub async fn get_playlist(
+    config: &MsConfig,
+    playlist_id: &YoutubePlaylistId,
+) -> Result<Playlist, YTError> {
+    let maybe_cached_playlist = DB.try_get_playlist(playlist_id);
 
-    if maybe_cached_playlist
-        .as_ref()
-        .is_some_and(|p| chrono::Utc::now() - p.fetch_time < PLAYLISTS_QUICK_CACHE_TIME)
-    {
+    if maybe_cached_playlist.as_ref().is_some_and(|p| {
+        SystemTime::now()
+            .duration_since(*p.fetch_time)
+            .is_ok_and(|f| f < PLAYLISTS_QUICK_CACHE_TIME)
+    }) {
         debug!("Found cached playlist in last 5 minutes");
         return maybe_cached_playlist.ok_or(YTError::Unknown);
     }
 
     let auth = get_auth(config).await?;
 
-    debug!("Getting playlist: {}", playlist_id);
+    debug!("Getting playlist: {playlist_id}");
     let mut response = get_playlist_reponse(&auth, playlist_id, None).await?;
     let mut next_page = response.next_page_token.take();
     let page_info = response.page_info.clone();
 
-    debug!("Got page info: {:?}", page_info);
+    debug!("Got page info: {page_info:?}");
 
     if let Some(cached_playlist) = maybe_cached_playlist {
         if cached_playlist.etag == response.etag
@@ -188,7 +193,7 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
             && cached_playlist.items.len() == page_info.total_results as usize
         {
             debug!("Found cached playlist by etag");
-            dbdata::DB.update_playlist_fetch_time(playlist_id, chrono::Utc::now());
+            DB.update_playlist_fetch_time(playlist_id, SystemTime::now());
             return Ok(cached_playlist);
         }
     }
@@ -196,8 +201,8 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
     debug!("Creating new playlist");
 
     let mut playlist = Playlist {
-        playlist_id: playlist_id.to_owned(),
-        fetch_time: chrono::Utc::now(),
+        playlist_id: playlist_id.clone(),
+        fetch_time: SystemTime::now().into(),
         etag: mem::take(&mut response.etag),
         total_results: page_info.total_results,
         items: Vec::with_capacity(page_info.total_results as usize),
@@ -206,7 +211,7 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
     drain_to(&mut playlist.items, response);
 
     while let Some(next_page_key) = next_page {
-        debug!("Getting next page: {}", next_page_key);
+        debug!("Getting next page: {next_page_key}");
 
         let mut response = get_playlist_reponse(&auth, playlist_id, Some(&next_page_key)).await?;
         next_page = response.next_page_token.take();
@@ -216,21 +221,21 @@ pub async fn get_playlist(config: &MsConfig, playlist_id: &str) -> Result<Playli
 
     debug!("Saving playlist to db cache");
 
-    dbdata::DB.set_playlist(&playlist);
+    DB.set_playlist(&playlist);
 
     Ok(playlist)
 }
 
 async fn get_playlist_reponse(
     auth: &AuthData,
-    playlist_id: &str,
+    playlist_id: &YoutubePlaylistId,
     page: Option<&str>,
 ) -> Result<YtPlaylistItemsResponse, YTError> {
     let mut req = CLIENT
         .get("https://www.googleapis.com/youtube/v3/playlistItems")
         .query(&[
             ("part", "snippet"),
-            ("playlistId", playlist_id),
+            ("playlistId", playlist_id.as_ref()),
             ("maxResults", "50"),
         ]);
     if let Some(page) = page {
@@ -247,24 +252,23 @@ async fn get_playlist_reponse(
 }
 
 fn drain_to(items: &mut Vec<PlaylistItem>, response: YtPlaylistItemsResponse) {
-    for mut item in response.items.into_iter() {
+    for (index, mut item) in response.items.into_iter().enumerate() {
         let artist = if let Some(mut artist) = item.snippet.video_owner_channel_title.take() {
             const STRIP_SUFFIX: &str = " - Topic";
             if artist.ends_with(STRIP_SUFFIX) {
                 artist.truncate(artist.len() - STRIP_SUFFIX.len());
-                artist
-            } else {
-                artist
             }
-            .to_owned()
+            artist
         } else {
             mem::take(&mut item.snippet.channel_title)
         };
 
         items.push(PlaylistItem {
-            video_id: mem::take(&mut item.snippet.resource_id.video_id),
+            video_id: mem::take(&mut item.snippet.resource_id.video_id).into(),
             title: mem::take(&mut item.snippet.title),
             artist,
+            position: index as u32,
+            jelly_status: JellyStatus::NotSynced,
         });
     }
 }
@@ -319,7 +323,7 @@ enum YtTokenResponse {
 #[derive(Debug, Deserialize)]
 struct YtTokenResponseSuccess {
     pub access_token: String,
-    pub expires_in: i64,
+    pub expires_in: u64,
     pub refresh_token: Option<String>,
     #[expect(dead_code)]
     pub scope: String,
@@ -338,7 +342,7 @@ struct YtTokenResponseError {
 struct YtDeviceCodeResponse {
     pub device_code: String,
     pub user_code: String,
-    pub expires_in: i64,
-    pub interval: i64,
+    pub expires_in: u64,
+    pub interval: u64,
     pub verification_url: String,
 }
