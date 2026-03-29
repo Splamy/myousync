@@ -11,7 +11,8 @@ use thiserror::Error;
 
 static LIMITER: Limiter = Limiter::new(std::time::Duration::from_millis(1500));
 const RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-static SPLIT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bft\.?|\bfeat\.?|;|&").unwrap());
+static SPLIT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bft\.?|\bfeat\.?|;|&").unwrap());
 
 #[derive(Error, Debug)]
 pub enum BrainzError {
@@ -30,7 +31,11 @@ pub async fn fetch_recordings(search: &RecordingSearch) -> Result<BrainzMetadata
     if let Some(part) = search.title.to_query_part("recording") {
         parts.push(part);
     }
-    for part in search.artist.iter().flat_map(|a| a.to_query_part("artist")) {
+    for part in search
+        .artist
+        .iter()
+        .filter_map(|a| a.to_query_part("artist"))
+    {
         parts.push(part);
     }
     if let Some(part) = search.album.to_query_part("release") {
@@ -45,23 +50,21 @@ pub async fn fetch_recordings(search: &RecordingSearch) -> Result<BrainzMetadata
 }
 
 async fn fetch_recordings_by_id(id: &str) -> Result<BrainzMetadata, BrainzError> {
-    let query = format!("rid:{}", id);
+    let query = format!("rid:{id}");
     fetch_recordings_url(&query).await
 }
 
 async fn fetch_recordings_url(query: &str) -> Result<BrainzMetadata, BrainzError> {
-    let url = format!(
-        "http://musicbrainz.org/ws/2/recording/?limit=3&query={}",
-        query
-    );
+    let url = format!("http://musicbrainz.org/ws/2/recording/?limit=3&query={query}");
 
     let response = if let Some(cached_response) = dbdata::DB.try_get_brainz(&url) {
         cached_response
     } else {
-        debug!("Fetching brainz data from {}", url);
-        LIMITER.wait_for_next_fetch().await;
+        debug!("Fetching brainz data from {url}");
 
         let response = loop {
+            LIMITER.wait_for_next_fetch().await;
+
             let response = CLIENT
                 .get(&url)
                 .header("User-Agent", "splamy_music_sync/0.1 ( splamyn@gmail.com )")
@@ -69,10 +72,12 @@ async fn fetch_recordings_url(query: &str) -> Result<BrainzMetadata, BrainzError
                 .send()
                 .await?;
 
-            if response.status() == StatusCode::SERVICE_UNAVAILABLE {
-                tokio::time::sleep(RATE_LIMIT_WAIT).await;
-                LIMITER.set_last_fetch_now();
-                continue;
+            match response.status() {
+                StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS => {
+                    LIMITER.allow_next_fetch_in(RATE_LIMIT_WAIT);
+                    continue;
+                }
+                _ => {}
             }
 
             break response;
@@ -124,7 +129,7 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
         search.push(RecordingSearch {
             title: QTerm::Exact(dlp.title.clone()),
             artist: artist_vec.clone(),
-            album: QTerm::exact_option(&dlp.album),
+            album: QTerm::exact_option(dlp.album.as_ref()),
         });
         search.push(RecordingSearch {
             title: QTerm::Exact(dlp.title.clone()),
@@ -135,12 +140,6 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
 
     if dlp.title.contains(" - ") {
         let parts: Vec<&str> = dlp.title.split(" - ").collect();
-
-        fn split_artists(artist: &str) -> impl Iterator<Item = String> + use<'_> {
-            SPLIT_REGEX
-                .split(artist)
-                .map(|s| s.trim().to_string().replace(['(', ')', '[' , ']' , '【', '】'], ""))
-        }
 
         search.push(RecordingSearch {
             title: QTerm::Exact(parts[1].to_string()),
@@ -173,25 +172,33 @@ pub async fn analyze_brainz(dlp: &BrainzMultiSearch) -> Result<BrainzMetadata, B
 
     if brainz_res.is_none() {
         for search_opt in search {
-            info!("Searching brainz by {:?}", search_opt);
+            info!("Searching brainz by {search_opt:?}");
 
             match self::fetch_recordings(&search_opt).await {
                 Ok(result) => {
-                    debug!("Got result with {:?}", result);
+                    debug!("Got result with {result:?}");
                     brainz_res = Some(result);
                     break;
                 }
                 Err(e) => {
-                    error!("Error: {:?}", e);
+                    error!("Error: {e:?}");
                 }
             }
         }
     }
 
     let brainz_res = brainz_res.ok_or(BrainzError::EmptyResult);
-    info!("Got brainz res: {:?}", brainz_res);
+    info!("Got brainz res: {brainz_res:?}");
 
     brainz_res
+}
+
+fn split_artists(artist: &str) -> impl Iterator<Item = String> + use<'_> {
+    SPLIT_REGEX.split(artist).map(|s| {
+        s.trim()
+            .to_string()
+            .replace(['(', ')', '[', ']', '【', '】'], "")
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -220,32 +227,27 @@ pub enum QTerm {
 }
 
 impl QTerm {
-    pub fn exact_option<T: ToString>(text: &Option<T>) -> Self {
-        text.as_ref()
-            .map(|s| QTerm::Exact(s.to_string()))
-            .unwrap_or(QTerm::None)
+    pub fn exact_option<T: ToString>(text: Option<&T>) -> Self {
+        text.map_or(Self::None, |s| Self::Exact(s.to_string()))
     }
 
     #[expect(dead_code)]
-    pub fn fuzzy_option<T: ToString>(text: &Option<T>) -> Self {
-        text.as_ref()
-            .map(|s| QTerm::Fuzzy(s.to_string()))
-            .unwrap_or(QTerm::None)
+    pub fn fuzzy_option<T: ToString>(text: Option<&T>) -> Self {
+        text.map_or(Self::None, |s| Self::Fuzzy(s.to_string()))
     }
 
     pub fn to_query_part(&self, name: &str) -> Option<String> {
         match self {
-            QTerm::None => None,
-            QTerm::Exact(s) => Some(format!("{}:\"{}\"", name, urlencoding::encode(s))),
-            QTerm::Fuzzy(s) => Some(format!("{}:{}", name, urlencoding::encode(s))),
+            Self::None => None,
+            Self::Exact(s) => Some(format!("{}:\"{}\"", name, urlencoding::encode(s))),
+            Self::Fuzzy(s) => Some(format!("{}:{}", name, urlencoding::encode(s))),
         }
     }
 
     pub fn get_text(&self) -> Option<&str> {
         match self {
-            QTerm::None => None,
-            QTerm::Exact(s) => Some(s),
-            QTerm::Fuzzy(s) => Some(s),
+            Self::None => None,
+            Self::Exact(s) | Self::Fuzzy(s) => Some(s),
         }
     }
 }

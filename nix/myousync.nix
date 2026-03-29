@@ -12,30 +12,34 @@ with lib; let
   cfg = config.services.myousync;
   settingsFormat = pkgs.formats.toml {};
   configOptions =
-    lib.recursiveUpdate {
-      scrape = {
-        playlists = cfg.playlists;
-        yt_dlp = yt-dlp;
-      };
-      web = {
-        port = cfg.port;
-        path = ui-default.outPath;
-      };
-      paths = {
-        music =
-          if cfg.paths.music != null
-          then cfg.paths.music
-          else "${cfg.dataDir}/music";
-        temp =
-          if cfg.paths.temp != null
-          then cfg.paths.temp
-          else "${cfg.dataDir}/temp";
+    lib.recursiveUpdate
+    (
+      lib.filterAttrsRecursive (n: v: v != null) {
+        scrape = {
+          playlists = cfg.playlists;
+          yt_dlp = yt-dlp;
+        };
+        web = {
+          port = cfg.port;
+          path = ui-default.outPath;
+        };
+        paths = {
+          music =
+            if cfg.paths.music != null
+            then cfg.paths.music
+            else "${cfg.dataDir}/music";
+          temp =
+            if cfg.paths.temp != null
+            then cfg.paths.temp
+            else "${cfg.dataDir}/temp";
 
-        file_permissions = cfg.filePermissions;
-        dir_permissions = cfg.dirPermissions;
-      };
-      youtube = {};
-    }
+          file_permissions = cfg.filePermissions;
+          dir_permissions = cfg.dirPermissions;
+        };
+        youtube = {};
+        jellyfin = cfg.jellyfin;
+      }
+    )
     cfg.settings;
   configFile = settingsFormat.generate "myousync.toml" configOptions;
 in {
@@ -89,8 +93,8 @@ in {
       description = ''
         To set the youtube auth data, point `environmentFile` at a file containing:
         ```
-        YOUTUBE_CLIENT_ID=your_id
-        YOUTUBE_CLIENT_SECRET=your_secret
+        MYOUSYNC__YOUTUBE__CLIENT_ID=your_id
+        MYOUSYNC__YOUTUBE__CLIENT_SECRET=your_secret
         ```
       '';
     };
@@ -100,14 +104,6 @@ in {
       default = {};
       description = ''
         The root myousync.toml configuration. Nix specific config will overwrite values in this.
-      '';
-    };
-
-    playlists = mkOption {
-      type = types.listOf types.str;
-      default = [];
-      description = ''
-        The youtube playlists to scrape. Add "LM" for the 'liked music' list.
       '';
     };
 
@@ -132,8 +128,8 @@ in {
     };
 
     filePermissions = mkOption {
-      type = types.str;
-      default = "664";
+      type = types.nullOr types.str;
+      default = null;
       example = "664";
       description = ''
         Unix Permissions in octal for the music files.
@@ -141,11 +137,40 @@ in {
     };
 
     dirPermissions = mkOption {
-      type = types.str;
-      default = "0775";
+      type = types.nullOr types.str;
+      default = null;
       example = "0775";
       description = ''
         Unix Permissions in octal for the artist/album folders the music files will be placed in.
+      '';
+    };
+
+    jellyfin = mkOption {
+      type = types.nullOr types.submodule {
+        freeformType = settingsFormat.type;
+        options.server = mkOption {
+          type = types.str;
+          description = "Server url of the Jellyfin instance";
+          example = "http://localhost:8096";
+        };
+        options.user = mkOption {
+          type = types.str;
+          description = ''
+            The user to login as.
+            For the password, point `environmentFile` at a file containing:
+            ```
+            MYOUSYNC__JELLYFIN__PASSWORD=your_password
+            ```
+          '';
+        };
+        options.collection = mkOption {
+          type = types.str;
+          description = "The music or parent collection to search for added audio files";
+        };
+      };
+      default = null;
+      description = ''
+        Syncronization to jellyfin
       '';
     };
   };
