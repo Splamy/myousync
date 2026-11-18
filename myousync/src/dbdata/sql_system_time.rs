@@ -5,7 +5,7 @@ use std::{
 
 use rusqlite::{
     ToSql,
-    types::{FromSql, FromSqlResult, ToSqlOutput, ValueRef},
+    types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -57,7 +57,9 @@ impl ToSql for SqlSystemTime {
 
 impl FromSql for SqlSystemTime {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
-        u64::column_result(value).map(|num| Self(from_timestamp(num)))
+        let num = i64::column_result(value)?;
+        let num = u64::try_from(num).map_err(|_| FromSqlError::OutOfRange(num))?;
+        Ok(Self(from_timestamp(num)))
     }
 }
 

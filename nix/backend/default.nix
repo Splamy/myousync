@@ -12,7 +12,8 @@ in
       };
 
       buildInputs = [
-        openssl
+        aws-lc
+        sqlite
       ];
       nativeBuildInputs = [
         pkg-config
