@@ -37,6 +37,7 @@ with lib; let
           dir_permissions = cfg.dirPermissions;
         };
         youtube = {};
+        jellyfin = cfg.jellyfin;
       }
     )
     cfg.settings;
@@ -145,20 +146,29 @@ in {
     };
 
     jellyfin = mkOption {
-      type = types.submodule {
+      type = types.nullOr types.submodule {
         freeformType = settingsFormat.type;
-        options.music = mkOption {
-          type = types.nullOr types.path;
-          description = "The folder where the final tagged files will be stored";
-          default = null;
+        options.server = mkOption {
+          type = types.str;
+          description = "Server url of the Jellyfin instance";
+          example = "http://localhost:8096";
         };
-        options.temp = mkOption {
-          type = types.nullOr types.path;
-          description = "The folder where songs will be downloaded to and held until tagged.";
-          default = null;
+        options.user = mkOption {
+          type = types.str;
+          description = ''
+            The user to login as.
+            For the password, point `environmentFile` at a file containing:
+            ```
+            MYOUSYNC__JELLYFIN__PASSWORD=your_password
+            ```
+          '';
+        };
+        options.collection = mkOption {
+          type = types.str;
+          description = "The music or parent collection to search for added audio files";
         };
       };
-      default = {};
+      default = null;
       description = ''
         Syncronization to jellyfin
       '';

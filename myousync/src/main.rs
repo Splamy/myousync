@@ -712,9 +712,13 @@ pub struct FileCache {
 impl MsState {
     #[must_use]
     pub fn new(config_path: &std::path::Path) -> Self {
-        let config = MsConfig::read(config_path).unwrap_or_else(|_| {
+        let mut config = MsConfig::read(config_path).unwrap_or_else(|_| {
             panic!("Failed to read config at {}", config_path.to_string_lossy())
         });
+        if let Some(j) = config.jellyfin.as_mut() {
+            j.server.truncate(j.server.trim_end_matches('/').len());
+        }
+
         let limiters = Limiters {
             youtube: Limiter::new(config.scrape.yt_dlp_rate),
         };

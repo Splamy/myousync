@@ -14,7 +14,7 @@ use axum::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 use log::info;
 use rand::{
-    Rng,
+    RngExt,
     distr::{Alphanumeric, SampleString},
 };
 use serde::{Deserialize, Serialize};
@@ -25,8 +25,7 @@ use crate::{
     util,
 };
 use pbkdf2::{
-    Pbkdf2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
+    PasswordVerifier, Pbkdf2, password_hash::CustomizedPasswordHasher, phc::PasswordHash,
 };
 
 const AUTH_SECRET_KEY: &str = "auth_server_secret";
@@ -85,44 +84,35 @@ pub fn encode_jwt(email: String) -> Result<String, StatusCode> {
         user: email,
     };
 
-    jsonwebtoken::encode(
-        &Header::default(),
-        &claim,
-        &EncodingKey::from_secret(secret.as_ref()),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let key =
+        EncodingKey::from_secret(secret.as_ref()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    jsonwebtoken::encode(&Header::default(), &claim, &key)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub fn decode_jwt(jwt_token: &str) -> Result<TokenData<Claims>, StatusCode> {
     let secret = SECRET.to_string();
-    let result: Result<TokenData<Claims>, StatusCode> = jsonwebtoken::decode(
-        jwt_token,
-        &DecodingKey::from_secret(secret.as_ref()),
-        &Validation::default(),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-    result
+    let key =
+        DecodingKey::from_secret(secret.as_ref()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    jsonwebtoken::decode(jwt_token, &key, &Validation::default())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub fn hash_password(password: &str) -> String {
     let mut rng = rand::rng();
-    let mut bytes = [0u8; Salt::RECOMMENDED_LENGTH];
-    rng.fill(&mut bytes);
-    let salt = SaltString::encode_b64(&bytes).unwrap();
+    let mut salt = [0u8; 16];
+    rng.fill(&mut salt);
 
-    let params = pbkdf2::Params {
-        rounds: 1000,
-        ..Default::default()
-    };
-    Pbkdf2
-        .hash_password_customized(password.as_bytes(), None, None, params, &salt)
+    let params = pbkdf2::Params::new(1000).unwrap();
+    Pbkdf2::SHA256
+        .hash_password_with_params(password.as_bytes(), &salt, params)
         .unwrap()
         .to_string()
 }
 
 pub fn verify_password(stored: &str, password: &str) -> bool {
     let parsed_hash = PasswordHash::new(stored).unwrap();
-    Pbkdf2
+    Pbkdf2::SHA256
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok()
 }
